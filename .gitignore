@@ -1,2 +1,4 @@
 data
 *.pyc
+*output
+*results
