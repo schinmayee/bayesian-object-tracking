@@ -2,6 +2,7 @@
 import torchfile
 import math
 import numpy as np
+import utils
 
 '''
 Abstract class representing input data
@@ -64,9 +65,19 @@ class Data(object):
     # convert given data to img data ({x,y}->0 if occluded, 255 otherwise)
     def ConvertToImgArray(self, raw):
         rdg = raw[self.index]
-        res = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
-        res[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = 255
-        return res
+        res1 = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
+        res1[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = 255
+        res2 = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
+        for i in range(self.num_angles):
+            if raw[i] == float('inf'):
+                continue
+            xy = utils.GetCartesian(raw[i], self.GetAngle(i)) + \
+                 np.array([self.viewer_x,self.viewer_y])
+            x=max(min(int(round(xy[0])),50),0)
+            y=max(min(int(round(xy[1])),50),0)
+            res2[y][x] = 125
+        res2[int(self.viewer_y)][int(self.viewer_x)] = 125
+        return np.minimum(res1+res2,255)
 
     # get image data ({x,y}->0 if occluded, 255 otherwise)
     def GetStepImgArray(self, i):
@@ -80,7 +91,7 @@ class TorchData(Data):
     def __init__(self, height, width, grid_step, angle_min=-90, angle_max=90):
         super(TorchData, self).__init__(
               height=height, width=width, grid_step=grid_step,
-              viewer_x = math.ceil(float(width)/2), viewer_y = 0.0,
+              viewer_x = math.floor(float(width)/2), viewer_y = 0.0,
               angle_min=angle_min, angle_max=angle_max)
 
     # read data from a file

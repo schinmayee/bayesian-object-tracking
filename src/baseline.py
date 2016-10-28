@@ -72,11 +72,14 @@ assert(data is not None)
 data.ReadFrom(data_file)
 data.BuildIndex()
 
-# code to save segemented objects
-def SaveObjectImages(raw, objs, f):
+# save input
+def SaveInput(raw, f):
     img_array = data.ConvertToImgArray(raw)
     img_path  = os.path.join(imgs_dir, 'objects_%010d_all.png' %f)
     utils.SaveImage(img_array, img_path)
+
+# save input
+def SaveGrouped(raw, objs, f):
     for i in range(len(objs_cur)):
         obj = objs_cur[i]
         img_path  = os.path.join(imgs_dir, 'object_%010d_%03d.png' % (f,i))
@@ -87,6 +90,12 @@ def SaveObjectImages(raw, objs, f):
             raw_obj[i] = raw[i]
         img_array = data.ConvertToImgArray(raw_obj)
         utils.SaveImage(img_array, img_path)
+
+# save input
+def SavePredicted(raw, f):
+    img_array = data.ConvertToImgArray(raw)
+    img_path  = os.path.join(imgs_dir, 'predicted_%010d.png' %f)
+    utils.SaveImage(img_array, img_path)
 
 # segment objects
 def GetObjects(raw):
@@ -116,7 +125,7 @@ def GetObjects(raw):
             x1,y1 = utils.GetCartesian(r1, data.GetAngle(id1))
             x2,y2 = utils.GetCartesian(r2, data.GetAngle(id2))
             r_diff = math.sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2))
-            if r_tang/r_perp < thresh or r_diff < data.grid_step*math.sqrt(2):
+            if r_tang/r_perp < thresh or r_diff <= data.grid_step*math.sqrt(2):
                 obj.append(id2)
             else:
                 objs.append(obj)
@@ -128,6 +137,8 @@ def GetObjects(raw):
 
 # create a list of matched (object id,1 data 1, object id 2, data 2) given
 # objects for 2 time steps
+# the code will not generate duplicates for objs2, but may generate duplicates
+# (matched multiple times) for objs1
 def MatchObjects(raw1, raw2, objs1, objs2):
     t_min = math.radians(data.angle_min)
     t_inc = math.radians(data.angle_step)
@@ -175,16 +186,36 @@ def MatchObjects(raw1, raw2, objs1, objs2):
     return result
 
 
-# compute displacement given bounding cone data for 2 objects
-# if object is not seen in previous frame (either because it just appeared
-# or because of imperfect results of GetObjects), use the nearest object's
-# displacement
-def ComputeVelocities(objs):
-    raise NotImplemented('Call not implemented')
+# compute displacement given matched objects for two steps
+# pid deotes previous step, nid denotes next frame
+# (pid, nid are 0 or 1 denoting relative position in objs tuples)
+def ComputeDisplacement(objs, pid, nid):
+    result = {}
+    for grp in objs:
+        if grp[2*nid] is None:
+            continue
+        if grp[2*pid] is not None:
+            result[grp[2*nid]] = grp[2*nid+1]-grp[2*pid+1]
+        else:
+            result[grp[2*nid]] = np.array([0,0], dtype=np.float32)
+    return result
 
 # predict boolean image for next step given raw data for current step
-def PredictNext(raw_cur, d):
-    raise NotImplemented('Call not implemented')
+def PredictNext(disp, objs, raw):
+    res = np.ones(shape=[data.num_angles], dtype=np.float32)*float('inf')
+    for obj_id in disp.keys():
+        d = disp[obj_id]
+        obj = objs[obj_id]
+        for i in obj:
+            xy = utils.GetCartesian(raw[i],data.GetAngle(i)) + d
+            r = math.sqrt((xy[0]*xy[0]) + xy[1]*xy[1])
+            angle = math.degrees(math.atan2(xy[0], xy[1]))
+            rid = float(angle-data.angle_min)/data.angle_step
+            ridlo = int(math.floor(rid))
+            ridhi = int(math.ceil(rid))
+            res[ridlo] = min(res[ridlo], r)
+            res[ridhi] = min(res[ridhi], r)
+    return res
 
 # loop over all data, predicting next sequence and evaluating the prediction
 # also, save some data for visualization
@@ -193,18 +224,19 @@ raw_prv  = None
 objs_prv = None
 raw_cur  = data.GetStepRaw(0)
 objs_cur = GetObjects(raw_cur)
-SaveObjectImages(raw_cur, objs_cur, 0)
+SaveInput(raw_cur, 0)
+#SaveGrouped(raw_cur, objs_cur, 0)
 for i in range(1,till-1):
-    if i%dump_freq == 0:
-        SaveObjectImages(raw_cur, objs_cur, i)
     raw_prv  = raw_cur
     objs_prv = objs_cur
     raw_cur  = data.GetStepRaw(i)
+    if i%dump_freq == 0:
+        SaveInput(raw_cur, i)
     objs_cur = GetObjects(raw_cur)
     id_objs  = MatchObjects(raw_prv, raw_cur, objs_prv, objs_cur)
-    '''
-    v = ComputeVelocities(objs_prev, objs_cur)
-    pred = PredictNext(raw_cur, v)
-    '''
-    # evaluate prediction
+    disp = ComputeDisplacement(id_objs, 0, 1)
+    pred = PredictNext(disp, objs_cur, raw_cur)
     # save some results
+    if i%dump_freq == 0:
+        SavePredicted(pred, i+1)
+    # evaluate prediction
