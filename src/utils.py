@@ -4,7 +4,7 @@ from PIL import Image
 import numpy as np
 
 # save given boolean array as a black and white image
-def SaveBooleanImage(array, file_name):
+def SaveImage(array, file_name):
     im = Image.fromarray(array)
     im.save(file_name)
 

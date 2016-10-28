@@ -18,6 +18,12 @@ class Data(object):
         self.grid_step  = grid_step
         self.angle_min  = angle_min
         self.angle_max  = angle_max
+        self.num_angles = 0
+        self.index      = None
+        # file name and actual data
+        self.file_name  = None
+        self.data       = None
+        self.num_steps  = 0
         # distance from viewer/sensor
         self.distance   = np.zeros(shape=[height,width], dtype=np.float32)
         for y in range(height):
@@ -27,17 +33,13 @@ class Data(object):
                 self.distance[y,x] = math.sqrt(xd*xd + yd*yd)
         # index into sensor data
         self.angle_step = np.zeros(shape=[height,width], dtype=np.int32)
-        self.index      = None
-        # file name and actual data
-        self.file_name  = None
-        self.data       = None
-        self.num_sequences = 0
 
     # build index into sensor data, from x,y to distance recorded at that angle
     def BuildIndex(self):
         assert(self.data is not None)
-        num_rdgs = len(self.data[0])
-        self.angle_step = float(self.angle_max-self.angle_min)/float(num_rdgs-1)
+        self.num_angles = len(self.data[0])
+        self.angle_step = float(self.angle_max-self.angle_min)/ \
+                          float(self.num_angles-1)
         self.index = np.zeros(shape=[self.height,self.width], dtype=np.int32)
         for y in range(self.height):
             for x in range(self.width):
@@ -45,27 +47,26 @@ class Data(object):
                 yd = float(y)
                 angle = math.degrees(math.atan2(xd, yd))
                 rdg_id = int(round(float(angle-self.angle_min)/self.angle_step))
-                print(y,x,yd,xd,angle,rdg_id,self.angle_step)
                 self.index[y][x] = rdg_id
     
     # read data from a file
     def ReadFrom(self, file_name):
-        raise NotImplemented('Call not implemented')
+        raise NotImplemented('Call not implemented. Override in child class!')
 
     # get raw data for ith sequence (angle->dist)
-    def GetStepRaw(i):
+    def GetStepRaw(self, i):
         return self.data[i]
 
-    # convert given data to boolean data ({x,y}->0 if occluded)
-    def ConvertToBoolean(self, raw):
+    # convert given data to img data ({x,y}->0 if occluded, 255 otherwise)
+    def ConvertToImgArray(self, raw):
         rdg = raw[self.index]
         res = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
         res[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = 255
         return res
 
-    # get boolean data ({x,y}->0 if occluded)
-    def GetStepBoolean(self, i):
-        return self.ConvertToBoolean(self.data[i])
+    # get image data ({x,y}->0 if occluded, 255 otherwise)
+    def GetStepImgArray(self, i):
+        return self.ConvertToImgArray(self.data[i])
 
 
 '''
@@ -86,4 +87,4 @@ class TorchData(Data):
         self.data = torchfile.load(file_name)
         print('Total frames read = %i, sensor recordings per frame = %i' %
               (len(self.data), len(self.data[1])))
-        self.num_sequences = len(self.data)
+        self.num_steps = len(self.data)
