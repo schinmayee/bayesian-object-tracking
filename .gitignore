@@ -2,3 +2,4 @@ data
 *.pyc
 *output
 *results
+*.DS_Store

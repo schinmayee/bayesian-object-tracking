@@ -14,7 +14,7 @@ thresh_angle = 89.75
 # command line arguments
 parser = argparse.ArgumentParser("Shape agnostic baseline, options: ")
 parser.add_argument('--till', dest='till', metavar='last-sequence',
-                    type=int, default=pow(10,9),
+                    type=int, default=20,
                     help='Run till this sequence, and exit on reaching this '+
                          'sequence even if these is more data to process')
 parser.add_argument('--data', dest='data_file', metavar='data-file',
@@ -103,7 +103,7 @@ def GetObjects(raw):
     if len_idx == 0:
         return objs
     # first object
-    obj = [idx[0]]
+    obj = [idx[0][0]]
     for i in range(1,len_idx):
         id1, id2 = idx[0][i-1], idx[0][i]
         r1, r2 = raw[id1], raw[id2]
@@ -111,25 +111,74 @@ def GetObjects(raw):
             objs.append(obj)
             obj = [id2]
         else:
-            r_diff = math.fabs(r1*cos-r2)
+            r_tang = math.fabs(r1*cos-r2)
             r_perp = r1*sin
-            if r_diff/r_perp < thresh:
+            x1,y1 = utils.GetCartesian(r1, data.GetAngle(id1))
+            x2,y2 = utils.GetCartesian(r2, data.GetAngle(id2))
+            r_diff = math.sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2))
+            if r_tang/r_perp < thresh or r_diff < data.grid_step*math.sqrt(2):
                 obj.append(id2)
             else:
                 objs.append(obj)
                 obj = [id2]
-    objs.append(obj)
+    if len(obj) > 0:
+        objs.append(obj)
     return objs
 
 
-# create a list of (object id, bouding cone 1, bounding cone 2) given
-# bounding cone data for 2 time steps
-# result contains all objects that are there in second step
-def MatchObjects(d1, d2):
-    raise NotImplemented('Call not implemented')
+# create a list of matched (object id,1 data 1, object id 2, data 2) given
+# objects for 2 time steps
+def MatchObjects(raw1, raw2, objs1, objs2):
+    t_min = math.radians(data.angle_min)
+    t_inc = math.radians(data.angle_step)
+    # compute centroids and obj size
+    ctrs1, ctrs2 = [], []
+    for obj in objs1:
+        xy = [utils.GetCartesian(raw1[i], data.GetAngle(i)) for i in obj]
+        ctrs1.append(np.average(xy,0))
+    for obj in objs2:
+        xy = [utils.GetCartesian(raw2[i], data.GetAngle(i)) for i in obj]
+        ctrs2.append(np.average(xy,0))
+    # compute near objects within  2 grid cell distance (x and y)
+    thresh = math.sqrt(2*2+2*2)*data.grid_step
+    candidates = {}
+    for i2 in range(len(ctrs2)):
+        candidates[i2] = []
+        c2 = ctrs2[i2]
+        for i1 in range(len(ctrs1)):
+            c1 = ctrs1[i1]
+            d = math.sqrt(np.sum(np.power(c1-c2, 2)))
+            if d < thresh:
+                candidates[i2].append((i1,d))
+    # match i2 to i1
+    match = {}
+    for i2 in range(len(ctrs2)):
+        if len(candidates[i2])>0:
+            nbr = min(candidates[i2], key=lambda p : p[1])
+            nid = nbr[0]
+            match[i2]=nid
+        else:
+            match[i2]=None
+    # add all matched/unmatched pairs to result
+    result = []
+    matched = set()
+    for i2 in range(len(ctrs2)):
+        i1 = match[i2]
+        if i1 is not None:
+            result.append((i1,ctrs1[i1],i2,ctrs2[i2]))
+            matched.add(i1)
+        else:
+            result.append((None,None,i2,ctrs2[i2]))
+    for i1 in range(len(ctrs1)):
+        if i1 not in matched:
+            result.append((i1,ctrs1[i1],None,None))
+    return result
+
 
 # compute displacement given bounding cone data for 2 objects
-# if object is not seen in previous frame, assume its velocit as zero
+# if object is not seen in previous frame (either because it just appeared
+# or because of imperfect results of GetObjects), use the nearest object's
+# displacement
 def ComputeVelocities(objs):
     raise NotImplemented('Call not implemented')
 
@@ -152,8 +201,8 @@ for i in range(1,till-1):
     objs_prv = objs_cur
     raw_cur  = data.GetStepRaw(i)
     objs_cur = GetObjects(raw_cur)
+    id_objs  = MatchObjects(raw_prv, raw_cur, objs_prv, objs_cur)
     '''
-    id_objs  = MatchObjects(objs_prv, objs_cur)
     v = ComputeVelocities(objs_prev, objs_cur)
     pred = PredictNext(raw_cur, v)
     '''

@@ -48,6 +48,10 @@ class Data(object):
                 angle = math.degrees(math.atan2(xd, yd))
                 rdg_id = int(round(float(angle-self.angle_min)/self.angle_step))
                 self.index[y][x] = rdg_id
+
+    # get angle in radians, from y axis for reading i in one sensor data frame
+    def GetAngle(self, i):
+        return math.radians(self.angle_step*i+self.angle_min)
     
     # read data from a file
     def ReadFrom(self, file_name):
