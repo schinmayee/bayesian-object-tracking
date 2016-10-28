@@ -3,6 +3,7 @@
 import argparse, os
 import math
 import numpy as np
+import cPickle as pickle
 import data_reader as dt
 import utils
 
@@ -12,7 +13,7 @@ output_dir = os.path.join(script_dir, '..', 'results')
 thresh_angle = 89.75
 
 # command line arguments
-parser = argparse.ArgumentParser("Shape agnostic baseline, options: ")
+parser = argparse.ArgumentParser("Run baseline algorithm, options: ")
 parser.add_argument('--till', dest='till', metavar='last-sequence',
                     type=int, default=20,
                     help='Run till this sequence, and exit on reaching this '+
@@ -44,10 +45,18 @@ parser.add_argument('--grid_step', dest='data_grid_step', metavar='grid-step',
 parser.add_argument('--dump', dest='dump_freq', metavar='dump-freq',
                     type=int, default=10,
                     help='Dump data (images, debug info) every dump-freq steps')
+parser.add_argument('--pred_window', dest='pred_window', metavar='pred-window',
+                    type=int, default=4,
+                    help='Number of steps to predict')
 args = parser.parse_args()
-data_file = args.data_file
-imgs_dir = os.path.join(output_dir, 'images')
-dump_freq = args.dump_freq
+data_file   = args.data_file
+output_dir  = args.output
+imgs_dir    = os.path.join(output_dir, 'images')
+plt_dir     = os.path.join(output_dir, 'plot_data')
+dump_freq   = args.dump_freq
+pred_window = args.pred_window
+max_dist = math.sqrt(float(args.data_width*args.data_width)/4 +
+                     args.data_height*args.data_height)
 
 if not os.path.exists(output_dir):
     os.mkdir(output_dir)
@@ -55,6 +64,9 @@ assert(os.path.isdir(output_dir))
 if not os.path.exists(imgs_dir):
     os.mkdir(imgs_dir)
 assert(os.path.isdir(imgs_dir))
+if not os.path.exists(plt_dir):
+    os.mkdir(plt_dir)
+assert(os.path.isdir(plt_dir))
 
 if not os.path.isfile(data_file):
     print('Please pass a valid input data file')
@@ -92,9 +104,9 @@ def SaveGrouped(raw, objs, f):
         utils.SaveImage(img_array, img_path)
 
 # save input
-def SavePredicted(raw, f):
+def SavePredicted(raw, f, p):
     img_array = data.ConvertToImgArray(raw)
-    img_path  = os.path.join(imgs_dir, 'predicted_%010d.png' %f)
+    img_path  = os.path.join(imgs_dir, 'predicted_%010d_%d.png' %(f, p))
     utils.SaveImage(img_array, img_path)
 
 # segment objects
@@ -200,21 +212,23 @@ def ComputeDisplacement(objs, pid, nid):
             result[grp[2*nid]] = np.array([0,0], dtype=np.float32)
     return result
 
-# predict boolean image for next step given raw data for current step
-def PredictNext(disp, objs, raw):
+# predict next step given raw data for current step
+def PredictNext(disp, win, objs, raw):
     res = np.ones(shape=[data.num_angles], dtype=np.float32)*float('inf')
     for obj_id in disp.keys():
         d = disp[obj_id]
         obj = objs[obj_id]
         for i in obj:
-            xy = utils.GetCartesian(raw[i],data.GetAngle(i)) + d
+            xy = utils.GetCartesian(raw[i],data.GetAngle(i)) + d*float(win)
             r = math.sqrt((xy[0]*xy[0]) + xy[1]*xy[1])
             angle = math.degrees(math.atan2(xy[0], xy[1]))
             rid = float(angle-data.angle_min)/data.angle_step
             ridlo = int(math.floor(rid))
             ridhi = int(math.ceil(rid))
-            res[ridlo] = min(res[ridlo], r)
-            res[ridhi] = min(res[ridhi], r)
+            if ridlo >= 0 and ridlo < data.num_angles:
+                res[ridlo] = min(res[ridlo], r)
+            if ridhi >= 0 and ridhi < data.num_angles:
+                res[ridhi] = min(res[ridhi], r)
     return res
 
 # loop over all data, predicting next sequence and evaluating the prediction
@@ -226,17 +240,50 @@ raw_cur  = data.GetStepRaw(0)
 objs_cur = GetObjects(raw_cur)
 SaveInput(raw_cur, 0)
 #SaveGrouped(raw_cur, objs_cur, 0)
-for i in range(1,till-1):
+tpr, fpr, itpr, ifpr, mse_out, mse_io = {}, {}, {}, {}, {}, {}
+for p in range(1, pred_window+1):
+    k = 'step '+str(p)
+    tpr[k],fpr[k],itpr[k],ifpr[k],mse_out[k],mse_io[k] = {},{},{},{},{},{}
+for i in range(1,till-pred_window):
+    if i%dump_freq == 0:
+        print('Processing step %d ...' % (i))
     raw_prv  = raw_cur
     objs_prv = objs_cur
     raw_cur  = data.GetStepRaw(i)
+    # save some inputs as images
     if i%dump_freq == 0:
         SaveInput(raw_cur, i)
     objs_cur = GetObjects(raw_cur)
     id_objs  = MatchObjects(raw_prv, raw_cur, objs_prv, objs_cur)
     disp = ComputeDisplacement(id_objs, 0, 1)
-    pred = PredictNext(disp, objs_cur, raw_cur)
-    # save some results
-    if i%dump_freq == 0:
-        SavePredicted(pred, i+1)
-    # evaluate prediction
+    img_in  = data.GetStepImgBool(i)
+    for p in range(1,pred_window+1):
+        k = 'step '+str(p)
+        pred = PredictNext(disp, p, objs_cur, raw_cur)
+        # save some results
+        if i%dump_freq == 0:
+            SavePredicted(pred, i, p)
+        # evaluate prediction
+        img_out = data.GetStepImgBool(i+p)
+        img_pred = data.ConvertToImgBool(pred)
+        # error
+        tpr[k][i], fpr[k][i], err_im = utils.GetErrorImage(ref=img_out, pred=img_pred)
+        # sanity check: find difference between consecutive images in data
+        itpr[k][i], ifpr[k][i], diff_im = utils.GetErrorImage(ref=img_in, pred=img_out)
+        # save error images
+        if i%dump_freq == 0:
+            utils.SaveImage(err_im,
+                            os.path.join(imgs_dir, 'pred_diff_%010d_%d.png' % (i,p)))
+            utils.SaveImage(diff_im,
+                            os.path.join(imgs_dir, 'cons_diff_%010d_%d.png' % (i,p)))
+        # mse
+        mse_out[k][i] = utils.GetMSE(raw_cur, pred, max_dist)
+        mse_io[k][i]  = utils.GetMSE(raw_cur, data.GetStepRaw(i+1), max_dist)
+
+# save data for plotting later
+err_file = open(os.path.join(plt_dir, 'errors'), 'w')
+err = { 'true positive rate': { 'baseline' : tpr, 'repeat n' : itpr}, \
+        'false positive rate': { 'baseline' : fpr, 'repeat n' : ifpr}, \
+        'mse' : { 'baseline' : mse_out, 'repeat n':mse_io } }
+pickle.dump(err, err_file)
+err_file.close()

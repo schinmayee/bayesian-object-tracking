@@ -62,7 +62,8 @@ class Data(object):
     def GetStepRaw(self, i):
         return self.data[i]
 
-    # convert given data to img data ({x,y}->0 if occluded, 255 otherwise)
+    # convert given data to img data ({x,y}->0 if occluded, 125 if
+    # object surface, 255 otherwise)
     def ConvertToImgArray(self, raw):
         rdg = raw[self.index]
         res1 = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
@@ -73,15 +74,24 @@ class Data(object):
                 continue
             xy = utils.GetCartesian(raw[i], self.GetAngle(i)) + \
                  np.array([self.viewer_x,self.viewer_y])
-            x=max(min(int(round(xy[0])),50),0)
-            y=max(min(int(round(xy[1])),50),0)
+            x=int(round(xy[0]))
+            y=int(round(xy[1]))
+            if x < 0 or x > 50 or y < 0 or y > 50:
+                continue
             res2[y][x] = 125
         res2[int(self.viewer_y)][int(self.viewer_x)] = 125
         return np.minimum(res1+res2,255)
-
-    # get image data ({x,y}->0 if occluded, 255 otherwise)
     def GetStepImgArray(self, i):
         return self.ConvertToImgArray(self.data[i])
+
+    # convert given data to img data ({x,y}->false if occluded, true otherwise)
+    def ConvertToImgBool(self, raw):
+        rdg = raw[self.index]
+        res = np.zeros(shape=[self.height,self.width], dtype=bool)
+        res[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = True
+        return res
+    def GetStepImgBool(self, i):
+        return self.ConvertToImgBool(self.data[i])
 
 
 '''
