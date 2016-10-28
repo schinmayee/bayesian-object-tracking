@@ -277,13 +277,13 @@ for i in range(1,till-pred_window):
             utils.SaveImage(diff_im,
                             os.path.join(imgs_dir, 'cons_diff_%010d_%d.png' % (i,p)))
         # mse
-        mse_out[k][i] = utils.GetMSE(raw_cur, pred, max_dist)
-        mse_io[k][i]  = utils.GetMSE(raw_cur, data.GetStepRaw(i+1), max_dist)
+        mse_out[k][i] = utils.GetAveError(raw_cur, pred, max_dist)
+        mse_io[k][i]  = utils.GetAveError(raw_cur, data.GetStepRaw(i+1), max_dist)
 
 # save data for plotting later
 err_file = open(os.path.join(plt_dir, 'errors'), 'w')
 err = { 'true positive rate': { 'baseline' : tpr, 'repeat n' : itpr}, \
         'false positive rate': { 'baseline' : fpr, 'repeat n' : ifpr}, \
-        'mse' : { 'baseline' : mse_out, 'repeat n':mse_io } }
+        'mean error' : { 'baseline' : mse_out, 'repeat n':mse_io } }
 pickle.dump(err, err_file)
 err_file.close()

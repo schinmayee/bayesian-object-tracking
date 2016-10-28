@@ -71,4 +71,4 @@ for typ in errors.keys():
     ax.set_xticks(ind + width)
     ax.set_xticklabels(x)
     ax.legend(rects, algs)
-    fig.savefig(os.path.join(output_dir, typ))
+    fig.savefig(os.path.join(output_dir, typ.replace(' ','-')))

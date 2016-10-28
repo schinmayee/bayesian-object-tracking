@@ -2,4 +2,6 @@ data
 *.pyc
 *output
 *results
+*.tar
+*.zip
 *.DS_Store
