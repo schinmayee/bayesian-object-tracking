@@ -10,7 +10,13 @@ I am just starting this project, and am planning to use synthetic data for the f
 
 ## Dependencies
 
-  - torchfile, which you can install using
+  - torchfile
+  - numpy
+  - pillow
+  - matplotlib
+
+You can install all these dependencies with pip, as
+
   ```
-    pip install torchfile
+    pip install torchfile numpy pillow matplotlib
   ```

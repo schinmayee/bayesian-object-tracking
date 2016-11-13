@@ -1,7 +1,7 @@
 data
 *.pyc
 *output
-*results
+*results*
 *.tar
 *.zip
 *.DS_Store

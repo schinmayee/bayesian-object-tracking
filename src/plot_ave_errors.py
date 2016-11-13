@@ -17,7 +17,7 @@ parser.add_argument('--data', dest='data_file', metavar='data-file',
                     help='Input data file to use for generating plots')
 parser.add_argument('--output', dest='out_dir', metavar='out-dir',
                     type=str, required=True,
-                    help='Output director')
+                    help='Output directory')
 
 args = parser.parse_args()
 if output_dir == args.out_dir:
