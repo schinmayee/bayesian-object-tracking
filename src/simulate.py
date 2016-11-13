@@ -32,7 +32,14 @@ Child classes may have additional attributes.
 class SimObject(object):
   def __init__(self, pos, vel):
     self.pos = pos
+    self.pos_obs = pos
     self.vel = vel
+
+  '''
+  Add noise to pos, for observed position.
+  '''
+  def AddNoiseToPos(self, noise):
+    self.pos_obs = self.pos + noise
 
   '''
   Return true if object is in frame, even partially.
@@ -75,6 +82,16 @@ class CircObject(SimObject):
         dist = np.sqrt(np.sum(np.power(pt - self.pos, 2)))  # distance from circ center
         if dist <= self.radius:
           im_arr[i,j] = 255
+    min_pt = np.floor((self.pos_obs - self.radius)/d_cell)
+    max_pt = np.ceil((self.pos_obs + self.radius)/d_cell) + 1
+    x_min, y_min = max(int(min_pt[0]), 0), max(int(min_pt[1]), 0)
+    x_max, y_max = min(int(max_pt[0]), n), min(int(max_pt[1]), n)
+    for i in range(x_min, x_max):
+      for j in range(y_min, y_max):
+        pt = np.array([i, j])*d_cell + d_cell/2  # cell center
+        dist = np.sqrt(np.sum(np.power(pt - self.pos_obs, 2)))  # distance from circ center
+        if dist <= self.radius and im_arr[i,j] != 255:
+          im_arr[i,j] = 128
     
 '''
 Generic simulator, evolves objects with a fixed time step, using simple
@@ -110,6 +127,12 @@ class Simulator(object):
     raise NotImplemented('Call not implemented. Override in child class!')
 
   '''
+  Update observed position for object.
+  '''
+  def UpdateObservedPosition(self, o):
+    raise NotImplemented('Call not implemented. Override in child class!')
+
+  '''
   Save position and velocity of all objects in a text file.
   '''
   def SaveState(self, f):
@@ -120,6 +143,8 @@ class Simulator(object):
         o.pos.tofile(data, sep=' ')  # pos
         data.write(' ')
         o.vel.tofile(data, sep=' ')  # vel
+        data.write(' ')
+        o.pos_obs.tofile(data, sep=' ')  # pos_obs
         data.write('\n')
     return 0
 
@@ -161,6 +186,7 @@ class Simulator(object):
 
         # remove objects that are out of frame
         if o.IsInFrame():
+          self.UpdateObservedPosition(o)
           keep_objects.append(o)
 
       self.objects = keep_objects
@@ -183,6 +209,7 @@ class SimpleRandomSimulator(Simulator):
     self.a_sigma = self.v_mean
     self.prob = max_objects*self.v_mean*dt
     self.radius = 0.05
+    self.pos_sigma = self.radius/2
 
   def CreateNewObject(self):
     create_toss = random.random()
@@ -210,6 +237,11 @@ class SimpleRandomSimulator(Simulator):
     ax = random.gauss(self.a_mean, self.a_sigma)
     ay = random.gauss(self.a_mean, self.a_sigma)
     return np.array([ax, ay])
+
+  def UpdateObservedPosition(self, o):
+    px = random.gauss(0, self.pos_sigma)
+    py = random.gauss(0, self.pos_sigma)
+    o.AddNoiseToPos(np.array([px, py]))
 
 if __name__ == '__main__':
   random.seed(0)
