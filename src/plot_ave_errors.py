@@ -49,7 +49,7 @@ for typ in errors.keys():
         plt_ave[alg] = []
         plt_std[alg] = []
         # for each pred pt (1 in future, 2 in future etc)
-        for p in alg_data.keys():  # for each 
+        for p in alg_data.keys():  # for each
             # average over all predictions
             p_data = alg_data[p]
             plt_ave[alg].append(np.average([p_data.values()]))

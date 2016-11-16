@@ -5,3 +5,4 @@ data
 *.tar
 *.zip
 *.DS_Store
+*tags

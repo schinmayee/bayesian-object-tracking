@@ -1,115 +1,40 @@
-#!/usr/bin/env python
-import torchfile
-import math
-import numpy as np
-import utils
+'''
+Reads actual positions and velocity of objects, from file file_name, and
+returns a dictionary of object id -> (position, velocity).
+'''
+def ReadActualState(file_name):
+    lines = open(file_name, 'r')
+    num_objects = int(file_data[0])
+    # number of lines is number of objects, plus 1st line -- header,
+    # plus may be an additional empty line at the end
+    assert(len(lines) == num_objects+1 or len(lines) == num_objects+2)
+    # dictionary of object id -> true state
+    true_state = dict()
+    for o in range(1,num_objects+1):
+        obj_data = lines[o].split()
+        obj_id = int(obj_data[0])
+        obj_pos = [float(obj_data[i]) for i in [1,2]]
+        obj_vel = [float(obj_data[i]) for i in [3,4]]
+        true_state[o] = (obj_pos, obj_vel)
+    return true_state
 
 '''
-Abstract class representing input data
+Reads observed positions of objects, from file file_name, and returns a
+shuffled list of observed positions.
+The position in the list does not have any implication.
 '''
-class Data(object):
-    def __init__(self, height, width, grid_step,
-                 viewer_x, viewer_y, angle_min, angle_max):
-        # initialize members
-        assert(width%2 == 1)
-        self.height     = height
-        self.width      = width
-        self.viewer_x   = viewer_x
-        self.viewer_y   = viewer_y
-        self.grid_step  = grid_step
-        self.angle_min  = angle_min
-        self.angle_max  = angle_max
-        self.num_angles = 0
-        self.index      = None
-        # file name and actual data
-        self.file_name  = None
-        self.data       = None
-        self.num_steps  = 0
-        # distance from viewer/sensor
-        self.distance   = np.zeros(shape=[height,width], dtype=np.float32)
-        for y in range(height):
-            for x in range(width):
-                xd = float(x) - self.viewer_x
-                yd = float(y)
-                self.distance[y,x] = math.sqrt(xd*xd + yd*yd)
-        # index into sensor data
-        self.angle_step = np.zeros(shape=[height,width], dtype=np.int32)
-
-    # build index into sensor data, from x,y to distance recorded at that angle
-    def BuildIndex(self):
-        assert(self.data is not None)
-        self.num_angles = len(self.data[0])
-        self.angle_step = float(self.angle_max-self.angle_min)/ \
-                          float(self.num_angles-1)
-        self.index = np.zeros(shape=[self.height,self.width], dtype=np.int32)
-        for y in range(self.height):
-            for x in range(self.width):
-                xd = float(x) - self.viewer_x
-                yd = float(y)
-                angle = math.degrees(math.atan2(xd, yd))
-                rdg_id = int(round(float(angle-self.angle_min)/self.angle_step))
-                self.index[y][x] = rdg_id
-
-    # get angle in radians, from y axis for reading i in one sensor data frame
-    def GetAngle(self, i):
-        return math.radians(self.angle_step*i+self.angle_min)
-    
-    # read data from a file
-    def ReadFrom(self, file_name):
-        raise NotImplemented('Call not implemented. Override in child class!')
-
-    # get raw data for ith sequence (angle->dist)
-    def GetStepRaw(self, i):
-        return self.data[i]
-
-    # convert given data to img data ({x,y}->0 if occluded, 125 if
-    # object surface, 255 otherwise)
-    def ConvertToImgArray(self, raw):
-        rdg = raw[self.index]
-        res1 = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
-        res1[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = 255
-        res2 = np.zeros(shape=[self.height,self.width], dtype=np.uint8)
-        for i in range(self.num_angles):
-            if raw[i] == float('inf'):
-                continue
-            xy = utils.GetCartesian(raw[i], self.GetAngle(i)) + \
-                 np.array([self.viewer_x,self.viewer_y])
-            x=int(round(xy[0]))
-            y=int(round(xy[1]))
-            if x < 0 or x > 50 or y < 0 or y > 50:
-                continue
-            res2[y][x] = 125
-        res2[int(self.viewer_y)][int(self.viewer_x)] = 125
-        return np.minimum(res1+res2,255)
-    def GetStepImgArray(self, i):
-        return self.ConvertToImgArray(self.data[i])
-
-    # convert given data to img data ({x,y}->false if occluded, true otherwise)
-    def ConvertToImgBool(self, raw):
-        rdg = raw[self.index]
-        res = np.zeros(shape=[self.height,self.width], dtype=bool)
-        res[self.distance + self.grid_step*math.sqrt(0.5) < rdg] = True
-        return res
-    def GetStepImgBool(self, i):
-        return self.ConvertToImgBool(self.data[i])
-
-
-'''
-Simulated data in torch file format
-'''
-class TorchData(Data):
-    def __init__(self, height, width, grid_step, angle_min=-90, angle_max=90):
-        super(TorchData, self).__init__(
-              height=height, width=width, grid_step=grid_step,
-              viewer_x = math.floor(float(width)/2), viewer_y = 0.0,
-              angle_min=angle_min, angle_max=angle_max)
-
-    # read data from a file
-    # the format of input data is one distance recording per angle,
-    # from -180-degrees to 180-degrees
-    def ReadFrom(self, file_name):
-        self.file_name = file_name
-        self.data = torchfile.load(file_name)
-        print('Total frames read = %i, sensor recordings per frame = %i' %
-              (len(self.data), len(self.data[1])))
-        self.num_steps = len(self.data)
+#TODO: update this to return only those objects that are visible
+def ReadObservedStateShuffled(file_name):
+    lines = open(file_name, 'r')
+    num_objects = int(file_data[0])
+    # number of lines is number of objects, plus 1st line -- header,
+    # plus may be an additional empty line at the end
+    assert(len(lines) == num_objects+1 or len(lines) == num_objects+2)
+    # dictionary of object id -> true state
+    obs_state = dict()
+    for o in range(1,num_objects+1):
+        obj_data = lines[o].split()
+        obs_pos = [float(obj_data[i]) for i in [5,6]]
+        obs_state[o] = obs_pos
+    random.shuffle(obs_state)
+    return obs_state
