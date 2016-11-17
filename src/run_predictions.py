@@ -37,5 +37,5 @@ if not os.path.exists(args.output_dir):
 assert(os.path.isdir(args.output_dir))
 
 if __name__ == '__main__':
-    kalman_basic = KalmanFilterBasic(args.data_dir, args.output_dir)
-    klaman_basic.Run(50, 1)
+    kalman_basic = predict.KalmanFilterBasic(args.data_dir, args.output_dir)
+    kalman_basic.Run(args.frames, args.log_freq)

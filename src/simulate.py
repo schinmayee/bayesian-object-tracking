@@ -110,7 +110,7 @@ GetAcceleration.
 * Simulator runs for frames number of frames.
 '''
 class Simulator(object):
-    def __init__(self, frames, log_freq, dt, max_objects, output_dir):
+    def __init__(self, dt, max_objects, output_dir):
         self.dt = dt
         self.max_objects = max_objects
         self.output_dir = output_dir
