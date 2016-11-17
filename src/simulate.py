@@ -98,7 +98,7 @@ class CircObject(SimObject):
                 pt = np.array([i, j])*d_cell + d_cell/2  # cell center
                 dist = np.sqrt(np.sum(np.power(pt - self.pos_obs, 2)))  # distance from circ center
                 if dist <= self.radius and im_arr[i,j] != 255:
-                    im_arr[i,j] = 128
+                    im_arr[i,j] = int(64*2.5)
 
 '''
 Generic simulator, evolves objects with a fixed time step, using simple
