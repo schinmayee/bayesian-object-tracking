@@ -147,7 +147,13 @@ class Simulator(object):
 
     '''
     Save position and velocity of all objects in a text file.
+    Data is saved as a list of oject id, true position, true velocity and
+    observed position.
+    The first line, the header, gives the number of objects, and each
+    following line corresponds to one object.
     '''
+    # TODO: change this to a csv format to make it more manageable as more
+    # columns are added
     def SaveState(self, f):
         file_name = os.path.join(self.output_dir, 'state_%08d.txt'%f)
         with open(file_name, 'w') as data:

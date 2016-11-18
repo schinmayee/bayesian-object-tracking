@@ -52,7 +52,7 @@ class Predictor(object):
     def Run(self, frames, log_freq):
         for f in range(frames):
             if f%log_freq == 0:
-                print('Finished %d frames' %f)
+                print('Finished %d frames ...' %f)
             self.Estimate(f)
             self.ComputeError()
             if f%log_freq == 0:
