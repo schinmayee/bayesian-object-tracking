@@ -334,3 +334,186 @@ class KalmanFilterBasic(KalmanFilterGeneric):
         out_file_name = os.path.join(self.output_dir, \
                                     'estimate_%08d.png' % frame)
         utils.SaveImage(im_arr, out_file_name)
+
+
+def ObsTrackDist(obs_pos, pred_state):
+    pred_pos = np.array(pred_state[0:2], dtype=float)
+    return np.sqrt(np.sum(np.power(obs_pos - pred_pos, 2)))
+
+
+def DistFromClosestBoundary(state):
+    pos = state[0:2]
+    xmin = min(pos[0], 1-pos[0])
+    ymin = min(pos[1], 1-pos[1])
+    return (max(min(xmin, ymin), 0))
+
+
+'''
+Brute-force search optimal match given observations, tracks, and match/no-match
+errors.
+All observations must match to a track or create a new track. If a track is
+unmatched, then there is a penalty given by no-match error unassigned_errors.
+'''
+def SearchOptimalRecursive(unassigned_errors, gated_tracks,
+                           assigned_tracks, obs_id):
+    num_tracks = len(unassigned_errors)
+    gated = gated_tracks[obs_id]
+    errors = dict()
+    assignments = dict()
+    # case: this observation defines a new track
+    rec_error, rec_match = 0, dict()
+    if obs_id+1 < len(gated_tracks):
+        rec_error, rec_match = SearchOptimalRecursive(
+            unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
+        )
+    if obs_id == 0:
+        # add errors from tracks that are not assigned to any observation
+        errors[num_tracks] = rec_error + \
+                sum([unassigned_errors[i] for i in assigned_tracks if not
+                     assigned_tracks])
+    else:
+        errors[num_tracks] = rec_error
+    assignments[num_tracks] = rec_match
+    # case: this observation is from one of existing tracks
+    for tid, error in gated.items():
+        # check that track is unassigned, and error is finite
+        if not assigned_tracks[tid] and error < float('inf'):
+            assigned_tracks[tid] = True
+            rec_error, rec_match = 0, dict()
+            if obs_id+1 < len(gated_tracks):  # not the last observation
+                rec_error, rec_match = SearchOptimalRecursive(
+                    unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
+                )
+            # error for this assignment is [observation-track_pos] error plus
+            # a penalty for each unassigned track in case this is the 0th
+            # observation (top of resursive call stack)
+            errors[tid] = error + rec_error
+            if obs_id == 0:
+                errors[tid] += sum([unassigned_errors[i] for i in
+                                    assigned_tracks if not assigned_tracks])
+            assignments[tid] = rec_match
+            assigned_tracks[tid] = False
+    # get assignment that gives smallest error
+    min_error_tid = min(errors, key=errors.get)
+    min_error = errors[min_error_tid]
+    min_assignment = assignments[min_error_tid]
+    min_assignment[obs_id] = dict()
+    if min_error_tid == len(unassigned_errors):
+        # create a new track for this observation
+        min_assignment[obs_id]['new_track'] = True
+    else:
+        # minimum error is when this observation is from an existing track
+        min_assignment[obs_id]['new_track'] = False
+        min_assignment[obs_id]['track_id'] = min_error_tid
+    return min_error, min_assignment
+
+
+'''
+Get optimal match given observations and predicted tracks for one frame.
+Does a brute-force search with gating to restrict observation-track match pairs
+to a bounded region around each observation/track.
+All observations must match to a track or create a new track. If a track is
+unmatched, then there is a penalty given by no-match error unassigned_errors.
+'''
+def SearchOptimalMatch(cur_tracks, observations, parameters,
+                       ObsTrackError=ObsTrackDist,
+                       NoObsTrackError=DistFromClosestBoundary):
+    threshold = max(4*parameters['a_sigma']*parameters['dt']*parameters['dt'],
+                    parameters['v_mean']*parameters['dt']*np.sqrt(2))
+    gated_tracks = dict()
+    for obs_id, obs_pos in enumerate(observations):
+        gated = dict()
+        gated_tracks[obs_id] = gated
+        for tid, t_state in enumerate(cur_tracks):
+            error = ObsTrackError(obs_pos, t_state)
+            if error <= threshold:
+                gated[tid] = error
+    assigned_tracks = [False] * len(cur_tracks)
+    unassigned_errors = [NoObsTrackError(t_state) for t_state in cur_tracks]
+    _, match = SearchOptimalRecursive(
+        unassigned_errors, gated_tracks, assigned_tracks, 0)
+    return match
+
+
+'''
+Association using brute force search, for Kalman filter based predictor.
+All readings are available, but there is no information on how many tracks
+there really are.
+'''
+class KalmanFilterShuffledSingleStep(KalmanFilterGeneric):
+    '''
+    The init method takes in input data directory, output directory,
+    and an initializer method for newly appeared objects.
+    '''
+    def __init__(self, data_dir, output_dir,
+                 ObsTrackError=ObsTrackDist,
+                 NoObsTrackError=DistFromClosestBoundary,
+                 OptimalMatch=SearchOptimalMatch,
+                 ObjectInitializer=SimpleRandomInitializer):
+        super(KalmanFilterShuffledSingleStep, self).\
+            __init__(data_dir, output_dir)
+        self.ObsTrackError    = ObsTrackDist
+        self.NoObsTrackError  = DistFromClosestBoundary
+        self.OptimalMatch     = OptimalMatch
+        self.InitializeObject = ObjectInitializer
+
+    '''
+    Read observations for given frame, and match observations to tracks.
+    Initialize new tracks.
+    '''
+    def UpdateTrackedObjects(self, frame):
+        file_name = os.path.join(self.data_dir, 'state_%08d.txt' % frame)
+        if not os.path.isfile(file_name):
+            print('Error, did not find state file for frame %d' % frame)
+            exit(1)
+        input_data = data_reader.ReadStateShuffled(file_name)
+        obs_data = [np.array(obs_pos, dtype=float) for _, _, obs_pos in
+                    input_data]
+        cur_tracks = [o.GetPredictedState() for o in self.state.values()]
+        match = self.OptimalMatch(cur_tracks, obs_data, self.parameters)
+        state = dict()
+        for oid, m in match.items():
+            if not m['new_track']:
+                object_state = self.state[m['track_id']]
+                obs_pos = input_data[oid][2]
+                object_state.SetObservation(np.array(obs_pos, dtype=float))
+                state[oid] = object_state
+            else:
+                object_state = self.InitializeObject(self.parameters,
+                                                     input_data[oid][2])
+                object_state.MarkDone()
+                state[oid] = object_state
+            state[oid].SetTrueState(np.array(input_data[oid][0], dtype=float),
+                                    np.array(input_data[oid][1], dtype=float))
+        self.state = state
+
+
+    '''
+    Compute error.
+    '''
+    def ComputeError(self):
+        frame_pos_error = 0
+        frame_vel_error = 0
+        for oid, state in self.state.items():
+            est = state.GetEstimatedState()
+            xe, ve = est[0:2], est[2:4]
+            xt, vt = state.GetTrueState()
+            frame_pos_error += np.sqrt(np.sum(np.power(xe-xt, 2)))
+            frame_vel_error += np.sqrt(np.sum(np.power(ve-vt, 2)))
+        num_objects = len(self.state)
+        self.pos_error.append(frame_pos_error/num_objects)
+        self.vel_error.append(frame_vel_error/num_objects)
+
+    '''
+    Save error image.
+    '''
+    def SaveEstimateAsImage(self, frame):
+        file_name = os.path.join(self.data_dir, 'state_%08d.png' % frame)
+        im_arr = utils.ReadImage(file_name)
+        for oid, state in self.state.items():
+            state.SetImage(im_arr)
+        out_file_name = os.path.join(self.output_dir, \
+                                    'estimate_%08d.png' % frame)
+        utils.SaveImage(im_arr, out_file_name)
+
+# TODO: compute deviation/image error, and recall/precision.

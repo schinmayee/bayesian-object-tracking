@@ -34,7 +34,7 @@ permutation of object positions.
 '''
 def ReadStateShuffled(file_name):
     with open(file_name, 'r') as file_data:
-        lines = open(file_name, 'r')
+        lines = file_data.readlines()
         num_objects = int(lines[0])
         # number of lines is number of objects, plus 1st line -- header,
         # plus may be an additional empty line at the end
@@ -43,6 +43,8 @@ def ReadStateShuffled(file_name):
         obs_state = list()
         for o in range(1,num_objects+1):
             obj_data = lines[o].split()
+            obj_pos = [float(obj_data[i]) for i in [1,2]]
+            obj_vel = [float(obj_data[i]) for i in [3,4]]
             obs_pos = [float(obj_data[i]) for i in [5,6]]
             obs_state.append((obj_pos, obj_vel, obs_pos))
         random.shuffle(obs_state)
