@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse, os
+import math
 import numpy as np
 import pickle
 import random
@@ -24,6 +25,9 @@ args = parser.parse_args()
 if not os.path.exists(args.output_dir):
     os.makedirs(args.output_dir)
 assert(os.path.isdir(args.output_dir))
+
+occluded_color = 150
+noise_color = 75
 
 '''
 Generic object in simulation.
@@ -57,6 +61,24 @@ class SimObject(object):
         raise NotImplemented('Call not implemented. Override in child class!')
 
     '''
+    Update distance and angle information with respect to viewer.
+    '''
+    def UpdateDistanceAndAngle(self, viewer_pos):
+        raise NotImplemented('Call not implemented. Override in child class!')
+
+    '''
+    Compute if object is occuded or not, and mark the object accordingly.
+    '''
+    def MarkUnoccluded(self, viewer_pos, objects):
+        raise NotImplemented('Call not implemented. Override in child class!')
+
+    '''
+    Return true if object is not occluded/
+    '''
+    def IsUnoccluded(self):
+        raise NotImplemented('Call not implemented. Override in child class!')
+
+    '''
     Set pixels that are occupied by the object, in im_arr.
     '''
     def SetImage(self, im_arr, n):
@@ -70,12 +92,40 @@ class CircObject(SimObject):
         super(CircObject, self).__init__(center, vel)
         self.radius = r
         self.eps = eps
+        self.angle = None  # angle that object's center forms with y axis
+        self.half_angle = None  # half angle formed by the object at viewer
+        self.dist = None  # distance from viewer
+        self.unoccluded = False
 
     def IsInFrame(self):
         return (self.pos[0] + self.radius >= -self.eps and
                 self.pos[0] - self.radius <= 1 + self.eps and
                 self.pos[1] + self.radius >= -self.eps and
                 self.pos[1] - self.radius <= 1 + self.eps)
+
+    def UpdateDistanceAndAngle(self, viewer_pos):
+        rel_pos = self.pos - viewer_pos  # angle from y axis
+        self.angle = math.atan2(rel_pos[0], rel_pos[1])
+        self.dist = np.sqrt(np.sum(np.power(rel_pos, 2)))
+        self.half_angle = math.atan2(self.radius, self.dist)
+
+    def MarkUnoccluded(self, viewer_pos, objects):
+        angle_min = self.angle - self.half_angle
+        angle_max = self.angle + self.half_angle
+        for o in objects:
+            if self == o:
+                continue
+            if o.dist < self.dist: 
+                o_min, o_max = o.angle-o.half_angle, o.angle+o.half_angle
+                # TODO
+                if angle_max > o_min and angle_max < o_max:
+                    angle_max = min(angle_max, o_min)
+                if angle_min > o_min and angle_min < o_max:
+                    angle_min = max(angle_min, o_max)
+        self.unoccluded = (angle_min < angle_max)
+
+    def IsUnoccluded(self):
+        return self.unoccluded
 
     def SetImage(self, im_arr, n):
         d_cell = 1.0/n
@@ -88,7 +138,10 @@ class CircObject(SimObject):
                 pt = np.array([i, j])*d_cell + d_cell/2  # cell center
                 dist = np.sqrt(np.sum(np.power(pt - self.pos, 2)))  # distance from circ center
                 if dist <= self.radius:
-                    im_arr[i,j] = 255
+                    if self.unoccluded:
+                        im_arr[i,j] = 255
+                    else:
+                        im_arr[i,j] = occluded_color
         min_pt = np.floor((self.pos_obs - self.radius)/d_cell)
         max_pt = np.ceil((self.pos_obs + self.radius)/d_cell) + 1
         x_min, y_min = max(int(min_pt[0]), 0), max(int(min_pt[1]), 0)
@@ -97,8 +150,8 @@ class CircObject(SimObject):
             for j in range(y_min, y_max):
                 pt = np.array([i, j])*d_cell + d_cell/2  # cell center
                 dist = np.sqrt(np.sum(np.power(pt - self.pos_obs, 2)))  # distance from circ center
-                if dist <= self.radius and im_arr[i,j] != 255:
-                    im_arr[i,j] = int(64*2.5)
+                if dist <= self.radius and im_arr[i,j] == 0:
+                    im_arr[i,j] = noise_color
 
 '''
 Generic simulator, evolves objects with a fixed time step, using simple
@@ -116,6 +169,7 @@ class Simulator(object):
         self.output_dir = output_dir
         self.objects = list()
         self.object_ids_used = 0
+        self.viewer_pos = np.array([1.0, 0.5], dtype=float)
 
     '''
     Update dictionary parameters with parameter key,values
@@ -165,6 +219,8 @@ class Simulator(object):
                 o.vel.tofile(data, sep=' ')  # vel
                 data.write(' ')
                 o.pos_obs.tofile(data, sep=' ')  # pos_obs
+                data.write(' ')
+                data.write(str(o.IsUnoccluded()))
                 data.write('\n')
         return 0
 
@@ -176,6 +232,20 @@ class Simulator(object):
         im_arr = np.zeros(shape=[n,n], dtype=np.uint8)
         for o in self.objects:
             o.SetImage(im_arr, n)
+
+        viewer_coord = self.viewer_pos * n
+        vx, vy = int(viewer_coord[0]), int(viewer_coord[1])
+        for i in range(-6, 7):
+            for j in range(-6, 7):
+                x, y = vx+i, vy+j
+                if x >= 0 and x < n and y >= 0 and y < n:
+                    im_arr[x,y] = occluded_color
+        for i in range(-3, 4):
+            for j in range(-3, 4):
+                x, y = vx+i, vy+j
+                if x >= 0 and x < n and y >= 0 and y < n:
+                    im_arr[x,y] = noise_color
+
         utils.SaveImage(im_arr, os.path.join(self.output_dir, 'state_%08d.png'%f))
 
     '''
@@ -209,8 +279,7 @@ class Simulator(object):
                 a = self.GetAcceleration(o)
                 o.pos = o.pos + o.vel*self.dt + 0.5*a*self.dt*self.dt
                 o.vel = o.vel + a*self.dt
-
-                # TODO: handle collisions
+                o.UpdateDistanceAndAngle(self.viewer_pos)
 
                 # remove objects that are out of frame
                 if o.IsInFrame():
@@ -218,6 +287,10 @@ class Simulator(object):
                     keep_objects.append(o)
 
             self.objects = keep_objects
+
+            # unoccluded objects
+            for o in self.objects:
+                o.MarkUnoccluded(self.viewer_pos, self.objects)
 
             # save all object data
             self.SaveState(f)
