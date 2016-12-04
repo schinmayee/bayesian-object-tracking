@@ -12,7 +12,7 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 data_dir = os.path.join(script_dir, '..', 'data/random')
 output_dir = os.path.join(script_dir, '..', 'predict_output')
 predictor = 'basic'
-predictor_types = ['basic', 'shuffled_ss']
+predictor_types = ['basic', 'unoccluded_nearest', 'occluded_most_likely']
 
 parser = argparse.ArgumentParser("Run object tracking using Kalman filtering"
                                 " and different data association algorithms")
@@ -41,13 +41,17 @@ if not os.path.exists(args.output_dir):
 assert(os.path.isdir(args.output_dir))
 
 if __name__ == '__main__':
+    kalman = None
     if args.predictor == 'basic':
-        kalman_basic = predict.KalmanFilterBasic(args.data_dir, args.output_dir)
-        kalman_basic.Run(args.frames, args.log_freq)
-    elif args.predictor == 'shuffled_ss':
-        kalman_shuffled_ss = predict.KalmanFilterShuffledSingleStep(
+        kalman = predict.KalmanFilterBasic(args.data_dir, args.output_dir)
+    elif args.predictor == 'unoccluded_nearest':
+        kalman = predict.KalmanFilterWithAssociation(
             args.data_dir, args.output_dir)
-        kalman_shuffled_ss.Run(args.frames, args.log_freq)
+    elif args.predictor == 'occluded_most_likely':
+        kalman = predict.KalmanFilterWithAssociation(
+            args.data_dir, args.output_dir, unoccluded_only=True,
+            OptimalMatch = predict.SearchOptimalMostLikely)
     else:
         print('Predictor should be one of ' + ', '.join(predictor_types))
         exit(1)
+    kalman.Run(args.frames, args.log_freq)

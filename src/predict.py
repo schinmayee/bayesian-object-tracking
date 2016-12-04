@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 
-import math
-import numpy as np
 import pickle
 import os
+import math
+import numpy as np
+from scipy.stats import multivariate_normal as mvnorm
 import data_reader
 import utils
+
+est_color = 50
+
 
 '''
 Generic predictor class, that reads in a window of data, and predicts upto
@@ -138,7 +142,24 @@ class KalmanObjectState(object):
         y_max = min(int(max_pt[1]), num[1])
         for i in range(x_min, x_max):
             for j in range(y_min, y_max):
-                im_arr[i,j] = int(64*1.5)
+                im_arr[i,j] = int(est_color)
+
+    def Predict(self, F, Q):
+        xp = np.matmul(F, self.GetEstimatedState())
+        xcov = np.matmul(np.matmul(F, self.GetStateCov()), np.transpose(F)) + Q
+        return xp, xcov
+
+    def Update(self, obs, H, R):
+        xp = self.GetPredictedState()
+        xcov = self.GetStateCov()
+        y = obs - np.matmul(H, xp)
+        S = np.matmul(np.matmul(H, xcov), np.transpose(H)) + R
+        Sinv = np.linalg.inv(S)
+        K = np.matmul(np.matmul(xcov, np.transpose(H)), Sinv)
+        xe = xp + np.matmul(K, y)
+        KH = np.matmul(K, H)
+        xcov = np.matmul(np.eye(np.shape(KH)[0]) - KH, self.GetStateCov())
+        return xe, xcov
 
 
 '''
@@ -186,9 +207,7 @@ class KalmanFilterGeneric(Predictor):
     def Estimate(self, frame):
         # predcit state at next step, for each object
         for oid, state in self.state.items():
-            xp = np.matmul(self.F, state.GetEstimatedState())
-            xcov = np.matmul(np.matmul(self.F, state.GetStateCov()), \
-                             np.transpose(self.F)) + self.Q
+            xp, xcov = state.Predict(self.F, self.Q)
             state.SetPredictedState(xp)
             state.SetStateCov(xcov)
             state.ResetDone()  # need to estimate state in the next phase
@@ -199,16 +218,7 @@ class KalmanFilterGeneric(Predictor):
         for oid, state in self.state.items():
             if state.IsDone():  # skip new/marked objects
                 continue
-            xp = state.GetPredictedState()
-            xcov = state.GetStateCov()
-            y = state.GetObservation() - np.matmul(self.H, xp)
-            S = np.matmul(np.matmul(self.H, xcov), np.transpose(self.H)) + \
-                self.R
-            Sinv = np.linalg.inv(S)
-            K = np.matmul(np.matmul(xcov, np.transpose(self.H)), Sinv)
-            xe = xp + np.matmul(K, y)
-            KH = np.matmul(K, self.H)
-            xcov = np.matmul(np.eye(np.shape(KH)[0]) - KH, state.GetStateCov())
+            xe, xcov = state.Update(state.GetObservation(), self.H, self.R)
             state.SetEstimatedState(xe)
             state.SetStateCov(xcov)
             state.MarkDone()
@@ -219,7 +229,7 @@ Initializes state for an object that just appeared, using passed parameters.
 Prioir information used for initializing object reflects how new objects are
 created in SimpleRandomSimulator.
 '''
-def SimpleRandomInitializer(parameters, pos):
+def SimpleRandomInitializer(parameters, F, Q, H, R, pos):
     eye2 = np.eye(2, dtype=float)
     zeros2 = np.zeros(shape=[2,2], dtype=float)
     pos_sigma = parameters['pos_sigma']
@@ -300,8 +310,9 @@ class KalmanFilterBasic(KalmanFilterGeneric):
                                                      dtype=float))
             # initialize new objects
             else:
-                object_state = self.InitializeObject(self.parameters,
-                                                     obj_state[2])
+                object_state = self.InitializeObject(
+                    self.parameters, self.F, self.Q,
+                    self.H, self.R, obj_state[2])
                 object_state.MarkDone()
                 self.state[oid] = object_state
             self.state[oid].SetTrueState(np.array(obj_state[0], dtype=float),
@@ -336,16 +347,23 @@ class KalmanFilterBasic(KalmanFilterGeneric):
         utils.SaveImage(im_arr, out_file_name)
 
 
-def ObsTrackDist(obs_pos, pred_state):
+def ObsTrackDist(state, obs_pos):
+    pred_state = state.GetPredictedState()
     pred_pos = np.array(pred_state[0:2], dtype=float)
     return np.sqrt(np.sum(np.power(obs_pos - pred_pos, 2)))
 
 
 def DistFromClosestBoundary(state):
-    pos = state[0:2]
+    pred_state = state.GetPredictedState()
+    pos = pred_state[0:2]
     xmin = min(pos[0], 1-pos[0])
     ymin = min(pos[1], 1-pos[1])
     return (max(min(xmin, ymin), 0))
+
+def ObsTrackProb(state, obs_pos, covariance):
+    pred_state = state.GetPredictedState()[0:2]
+    pos = pred_state[0:2]
+    return mvnorm.pdf(pred_state, mean=pos, cov=covariance)
 
 
 '''
@@ -413,49 +431,123 @@ Get optimal match given observations and predicted tracks for one frame.
 Does a brute-force search with gating to restrict observation-track match pairs
 to a bounded region around each observation/track.
 All observations must match to a track or create a new track. If a track is
-unmatched, then there is a penalty given by no-match error unassigned_errors.
+unmatched, then there is a penalty, computed using NoObsTrackError.
+Tracks that are outside the frame domain are not penalized.
 '''
-def SearchOptimalMatch(cur_tracks, observations, parameters,
-                       ObsTrackError=ObsTrackDist,
-                       NoObsTrackError=DistFromClosestBoundary):
-    threshold = max(4*parameters['a_sigma']*parameters['dt']*parameters['dt'],
-                    parameters['v_mean']*parameters['dt']*np.sqrt(2))
+def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
+    v_mean = parameters['v_mean']
+    a_sigma = parameters['a_sigma']
+    dt = parameters['dt']
+    threshold = max(2*a_sigma*dt*dt, v_mean*dt*np.sqrt(2))
     gated_tracks = dict()
     for obs_id, obs_pos in enumerate(observations):
         gated = dict()
         gated_tracks[obs_id] = gated
-        for tid, t_state in enumerate(cur_tracks):
-            error = ObsTrackError(obs_pos, t_state)
+        for tid, _ in enumerate(state_all):
+            t_state = state_all[tid]
+            error = ObsTrackDist(t_state, obs_pos)
             if error <= threshold:
                 gated[tid] = error
-    assigned_tracks = [False] * len(cur_tracks)
-    unassigned_errors = [NoObsTrackError(t_state) for t_state in cur_tracks]
+    num_tracks = len(state_all)
+    assigned_tracks = [False] * num_tracks
+    unassigned_errors = [float('inf')] * num_tracks
+    for tid, _ in enumerate(state_all):
+        t_state = state_all[tid]
+        t_error = DistFromClosestBoundary(t_state)
+        if t_error < threshold:
+            unassigned_errors[tid] = t_error
     _, match = SearchOptimalRecursive(
         unassigned_errors, gated_tracks, assigned_tracks, 0)
-    return match
+    return match, unassigned_errors
+
+
+def NotVisible(obs_pos, visible_mask):
+    if (obs_pos[0] < 0 or obs_pos[0] > 1 or
+        obs_pos[1] < 0 or obs_pos[1] > 1):
+        return True
+    n = np.shape(visible_mask)[0]
+    coord = np.round(obs_pos/n)
+    return (visible_mask[int(coord[0]), int(coord[1])] == 0)
 
 
 '''
-Association using brute force search, for Kalman filter based predictor.
+Get optimal match given observations and predicted tracks for one frame.
+Does a brute-force search with gating to restrict observation-track match pairs
+to a bounded region around each observation/track.
+All observations must match to a track or create a new track. If a track is
+unmatched, then there is a penalty, computed using NoObsTrackError.
+Tracks that are outside the frame domain are not penalized.
+'''
+def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
+    pos_sigma = parameters['pos_sigma']
+    v_mean = parameters['v_mean']
+    a_sigma = parameters['a_sigma']
+    dt = parameters['dt']
+    viewer_pos = parameters['viewer_pos']
+    threshold = max(2*a_sigma*dt*dt, v_mean*dt*math.sqrt(2))
+    delta = 0.5/float(np.shape(visible_mask)[0])
+    covariance = np.eye(2, dtype=float) * (a_sigma*a_sigma +
+                                           pos_sigma*pos_sigma)
+    gated_tracks = dict()
+    for obs_id, obs_pos in enumerate(observations):
+        gated = dict()
+        gated_tracks[obs_id] = gated
+        for tid, _ in enumerate(state_all):
+            t_state = state_all[tid]
+            dist = ObsTrackDist(t_state, obs_pos)
+            print(dist, threshold)
+            if dist <= threshold:
+                gated[tid] = -math.log(ObsTrackProb(
+                    t_state, obs_pos, covariance))
+    num_tracks = len(state_all)
+    assigned_tracks = [False] * num_tracks
+    unassigned_errors = [float('inf')] * num_tracks
+    for tid, _ in enumerate(state_all):
+        t_state = state_all[tid]
+        prob = 0
+        n = int(math.ceil(threshold/delta))
+        for i in range(-n, n+1):
+            for j in range(-n, n+1):
+                if i*i + j*j <= n*n:
+                    obs_pos = (t_state.GetPredictedState()[0:2] +
+                               [float(i)*delta, float(j)*delta])
+                    if NotVisible(obs_pos, visible_mask):
+                        prob += ObsTrackProb(t_state, obs_pos, covariance)
+        if prob != 0:
+            unassigned_errors[tid] = -math.log(prob)
+    print('Unassigned')
+    print(unassigned_errors)
+    print('Gated')
+    print(gated_tracks)
+    _, match = SearchOptimalRecursive(
+        unassigned_errors, gated_tracks, assigned_tracks, 0)
+    return match, unassigned_errors
+
+
+'''
 All readings are available, but there is no information on how many tracks
 there really are.
+Error = distance between track and observed distance, this corresponds to
+maximum likelihood when all observations are available (no occlusion).
+Association is done using brute force search, for Kalman filter based predictor.
 '''
-class KalmanFilterShuffledSingleStep(KalmanFilterGeneric):
+class KalmanFilterWithAssociation(KalmanFilterGeneric):
     '''
     The init method takes in input data directory, output directory,
     and an initializer method for newly appeared objects.
     '''
-    def __init__(self, data_dir, output_dir,
+    def __init__(self, data_dir, output_dir, unoccluded_only=False,
                  ObsTrackError=ObsTrackDist,
                  NoObsTrackError=DistFromClosestBoundary,
-                 OptimalMatch=SearchOptimalMatch,
+                 OptimalMatch=SearchOptimalNearest,
                  ObjectInitializer=SimpleRandomInitializer):
-        super(KalmanFilterShuffledSingleStep, self).\
+        super(KalmanFilterWithAssociation, self).\
             __init__(data_dir, output_dir)
         self.ObsTrackError    = ObsTrackDist
         self.NoObsTrackError  = DistFromClosestBoundary
         self.OptimalMatch     = OptimalMatch
         self.InitializeObject = ObjectInitializer
+        self.unoccluded_only  = unoccluded_only
 
     '''
     Read observations for given frame, and match observations to tracks.
@@ -467,24 +559,52 @@ class KalmanFilterShuffledSingleStep(KalmanFilterGeneric):
             print('Error, did not find state file for frame %d' % frame)
             exit(1)
         input_data = data_reader.ReadStateShuffled(file_name)
-        obs_data = [np.array(obs_pos, dtype=float) for _, _, obs_pos in
-                    input_data]
-        cur_tracks = [o.GetPredictedState() for o in self.state.values()]
-        match = self.OptimalMatch(cur_tracks, obs_data, self.parameters)
+        if self.unoccluded_only:
+            obs_data = [np.array(obs_pos, dtype=float)
+                        for _, _, obs_pos, visible in input_data if visible]
+        else:
+            obs_data = [np.array(obs_pos, dtype=float) for _, _, obs_pos, _ in
+                        input_data]
+        visible_mask = utils.ReadImage(
+            os.path.join(self.data_dir, 'visible_%08d.png' % frame))
+        match, unassigned_errors = self.OptimalMatch(
+            self.state, obs_data, self.parameters, visible_mask)
         state = dict()
+        num_objects = len(obs_data)
+        tracks_assigned = list()
+        print('Match')
+        print(match)
+        print(unassigned_errors)
         for oid, m in match.items():
             if not m['new_track']:
-                object_state = self.state[m['track_id']]
+                tid = m['track_id']
+                object_state = self.state[tid]
                 obs_pos = input_data[oid][2]
                 object_state.SetObservation(np.array(obs_pos, dtype=float))
                 state[oid] = object_state
+                tracks_assigned.append(tid)
             else:
-                object_state = self.InitializeObject(self.parameters,
-                                                     input_data[oid][2])
+                object_state = self.InitializeObject(
+                    self.parameters, self.F, self.Q,
+                    self.H, self.R, input_data[oid][2])
                 object_state.MarkDone()
                 state[oid] = object_state
             state[oid].SetTrueState(np.array(input_data[oid][0], dtype=float),
                                     np.array(input_data[oid][1], dtype=float))
+        print(tracks_assigned)
+        for tid, _ in enumerate(self.state):
+            t_state = self.state[tid]
+            if tid not in tracks_assigned:
+                pos = t_state.GetPredictedState()[0:2]
+                if pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1:
+                    continue
+                if unassigned_errors[tid] == float('inf'):
+                    continue
+                print('Keeping', tid, t_state.GetPredictedState())
+                t_state.MarkDone()
+                state[num_objects] = t_state
+                num_objects += 1
+
         self.state = state
 
 
@@ -515,5 +635,3 @@ class KalmanFilterShuffledSingleStep(KalmanFilterGeneric):
         out_file_name = os.path.join(self.output_dir, \
                                     'estimate_%08d.png' % frame)
         utils.SaveImage(im_arr, out_file_name)
-
-# TODO: compute deviation/image error, and recall/precision.

@@ -46,6 +46,7 @@ def ReadStateShuffled(file_name):
             obj_pos = [float(obj_data[i]) for i in [1,2]]
             obj_vel = [float(obj_data[i]) for i in [3,4]]
             obs_pos = [float(obj_data[i]) for i in [5,6]]
-            obs_state.append((obj_pos, obj_vel, obs_pos))
+            unoccluded = (obj_data[7] == 'True')
+            obs_state.append((obj_pos, obj_vel, obs_pos, unoccluded))
         random.shuffle(obs_state)
         return obs_state

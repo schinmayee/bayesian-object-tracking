@@ -84,6 +84,19 @@ class SimObject(object):
     def SetImage(self, im_arr, n):
         raise NotImplemented('Call not implemented. Override in child class!')
 
+def IsUnoccluded(viewer_pos, dist, angle, half_angle, objects):
+    angle_min = angle - half_angle
+    angle_max = angle + half_angle
+    for o in objects:
+        if o.dist < dist:
+            o_min, o_max = o.angle-o.half_angle, o.angle+o.half_angle
+            if angle_max > o_min and angle_max < o_max:
+                angle_max = min(angle_max, o_min)
+            if angle_min > o_min and angle_min < o_max:
+                angle_min = max(angle_min, o_max)
+    return (angle_min < angle_max)
+
+
 '''
 Circular object, inherits from generic SimObject.
 '''
@@ -109,6 +122,7 @@ class CircObject(SimObject):
         self.dist = np.sqrt(np.sum(np.power(rel_pos, 2)))
         self.half_angle = math.atan2(self.radius, self.dist)
 
+
     def MarkUnoccluded(self, viewer_pos, objects):
         angle_min = self.angle - self.half_angle
         angle_max = self.angle + self.half_angle
@@ -117,7 +131,6 @@ class CircObject(SimObject):
                 continue
             if o.dist < self.dist: 
                 o_min, o_max = o.angle-o.half_angle, o.angle+o.half_angle
-                # TODO
                 if angle_max > o_min and angle_max < o_max:
                     angle_max = min(angle_max, o_min)
                 if angle_min > o_min and angle_min < o_max:
@@ -176,6 +189,7 @@ class Simulator(object):
     '''
     def GetParameters(self, parameters):
         parameters['dt'] = self.dt
+        parameters['viewer_pos'] = self.viewer_pos
         return parameters
 
     '''
@@ -197,6 +211,9 @@ class Simulator(object):
     Update observed position for object.
     '''
     def UpdateObservedPosition(self, o):
+        raise NotImplemented('Call not implemented. Override in child class!')
+
+    def SaveVisibleMask(self, file_name):
         raise NotImplemented('Call not implemented. Override in child class!')
 
     '''
@@ -222,12 +239,11 @@ class Simulator(object):
                 data.write(' ')
                 data.write(str(o.IsUnoccluded()))
                 data.write('\n')
-        return 0
 
     '''
     Save image with all current objects, for visualization.
     '''
-    def SaveStateAsImage(self, f):
+    def SaveImageAndSensor(self, f):
         n = 500
         im_arr = np.zeros(shape=[n,n], dtype=np.uint8)
         for o in self.objects:
@@ -247,6 +263,9 @@ class Simulator(object):
                     im_arr[x,y] = noise_color
 
         utils.SaveImage(im_arr, os.path.join(self.output_dir, 'state_%08d.png'%f))
+
+        self.SaveVisibleMask(os.path.join(self.output_dir, 'visible_%08d.png'%f))
+
 
     '''
     Run the simulator for frames number of frames.
@@ -295,7 +314,7 @@ class Simulator(object):
             # save all object data
             self.SaveState(f)
             if f%log_freq == 0:
-                self.SaveStateAsImage(f)
+                self.SaveImageAndSensor(f)
 
 '''
 Simple random circular object simulator, inherits from generic Simulator.
@@ -352,6 +371,23 @@ class SimpleRandomSimulator(Simulator):
         px = random.gauss(0, self.pos_sigma)
         py = random.gauss(0, self.pos_sigma)
         o.AddNoiseToPos(np.array([px, py]))
+
+    def SaveVisibleMask(self, file_name):
+        n = 500
+        delta = 1/float(n)
+        im_mask = np.zeros(shape=[n,n], dtype=np.uint8)
+        for i in range(n):
+            for j in range(n):
+                pos = np.array([i*delta, j*delta], dtype=float)
+                rel_pos = pos-self.viewer_pos
+                dist = np.sqrt(np.sum(np.power(rel_pos, 2)))
+                angle = math.atan2(rel_pos[0], rel_pos[1])
+                half_angle = math.atan2(self.radius, dist)
+                if IsUnoccluded(
+                    self.viewer_pos, dist, angle, half_angle, self.objects):
+                    im_mask[i,j] = 255
+        utils.SaveImage(im_mask, file_name)
+
 
 if __name__ == '__main__':
     random.seed(0)
