@@ -451,7 +451,7 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
     v_mean = parameters['v_mean']
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
-    threshold = 8*a_sigma*dt*dt
+    threshold = 64*a_sigma*dt*dt
     num_tracks = len(state_all)
     gated_tracks = dict()
     track_error = [list()]*num_tracks
@@ -461,7 +461,7 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
         for tid, _ in enumerate(state_all):
             t_state = state_all[tid]
             error = ObsTrackDist(t_state, obs_pos)
-            if error <= 8*threshold:
+            if error <= threshold:
                 gated[tid] = error
                 track_error[tid].append(error)
     assigned_tracks = [False] * num_tracks
@@ -601,18 +601,18 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
                 state[oid] = object_state
             state[oid].SetTrueState(np.array(input_data[oid][0], dtype=float),
                                     np.array(input_data[oid][1], dtype=float))
-        for tid, _ in enumerate(self.state):
-            t_state = self.state[tid]
-            if tid not in tracks_assigned:
-                pos = t_state.GetPredictedState()[0:2]
-                if pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1:
-                    continue
-                if unassigned_errors[tid] == float('inf'):
-                    continue
-                t_state.MarkDone()
-                t_state.SetOldTrack()
-                state[num_objects] = t_state
-                num_objects += 1
+        #for tid, _ in enumerate(self.state):
+        #    t_state = self.state[tid]
+        #    if tid not in tracks_assigned:
+        #        pos = t_state.GetPredictedState()[0:2]
+        #        if pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1:
+        #            continue
+        #        if unassigned_errors[tid] == float('inf'):
+        #            continue
+        #        t_state.MarkDone()
+        #        t_state.SetOldTrack()
+        #        state[num_objects] = t_state
+        #        num_objects += 1
 
         self.state = state
 
