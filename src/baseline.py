@@ -32,20 +32,36 @@ assert(os.path.isdir(args.output_dir))
 
 if __name__ == '__main__':
     pos_error = list()
-    # compute error for each frame
-    for f in range(args.frames):
+    pos_rel_error = list()
+    # compute errors when object-observation association is known
+    for f in range(1,args.frames):
         if f%args.log_freq == 0:
             print('Finished %d frames ...' % f)
+        input_file_name_p = os.path.join(args.data_dir, 'state_%08d.txt' %
+                                         (f-1))
+        data_p = data_reader.ReadStateWithID(input_file_name_p)
         input_file_name = os.path.join(args.data_dir, 'state_%08d.txt' % f)
         data = data_reader.ReadStateWithID(input_file_name)
         pos_error_f = 0
+        pos_rel_error_f = 0
         for oid, state in data.items():
             x_true = np.array(state[0], dtype=float)
             x_obs = np.array(state[2], dtype=float)
-            pos_error_f += np.sqrt(np.sum(np.power(x_obs - x_true, 2)))
+            pos_error_d = np.sqrt(np.sum(np.power(x_obs - x_true, 2)))
+            pos_error_f += pos_error_d
+            if oid in data_p:
+                x_true_p = np.array(data_p[oid][0], dtype=float)
+                disp = np.sqrt(np.sum(np.power(x_true_p - x_true, 2)))
+                if disp != 0:
+                    pos_rel_error_f += pos_error_d/disp
         pos_error.append(pos_error_f/len(data))
+        pos_rel_error.append(pos_rel_error_f/len(data))
     # dump error
     pos_error_fname = os.path.join(args.output_dir, 'position_error')
     with open(pos_error_fname, 'w') as pos_error_file:
         pickle.dump(pos_error, pos_error_file)
-        print(pos_error)
+    pos_rel_error_fname = os.path.join(args.output_dir, 'pos_rel_error')
+    with open(pos_rel_error_fname, 'w') as pos_rel_error_file:
+        pickle.dump(pos_rel_error, pos_rel_error_file)
+    print(pos_error)
+    print(pos_rel_error)

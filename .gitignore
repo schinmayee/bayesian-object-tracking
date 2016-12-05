@@ -6,3 +6,4 @@ data
 *.zip
 *.DS_Store
 *tags
+plots

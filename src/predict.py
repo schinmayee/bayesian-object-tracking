@@ -3,6 +3,7 @@
 import pickle
 import os
 import math
+import collections
 import numpy as np
 from scipy.stats import multivariate_normal as mvnorm
 import data_reader
@@ -32,6 +33,7 @@ class Predictor(object):
         print('Parameters :\n', self.parameters)
         self.pos_error = list()  # error in estimated position
         self.vel_error = list()  # error in estimated velocity
+        self.pos_rel_error = list()
 
     '''
     Make predictions for next step, and read in data and refine the prediction.
@@ -68,8 +70,12 @@ class Predictor(object):
         vel_error_fname = os.path.join(self.output_dir, 'velocity_error')
         with open(vel_error_fname, 'w') as vel_error_file:
             pickle.dump(self.vel_error, vel_error_file)
+        pos_rel_error_fname = os.path.join(self.output_dir, 'pos_rel_error')
+        with open(pos_rel_error_fname, 'w') as pos_rel_error_file:
+            pickle.dump(self.pos_rel_error, pos_rel_error_file)
         print(self.pos_error)
         print(self.vel_error)
+        print(self.pos_rel_error)
 
 '''
 Object state, to use for Kalman filtering.
@@ -81,22 +87,27 @@ class KalmanObjectState(object):
 
     def  __init__(self, x_obs=zv2, x_est=zv4,
                   x_pred=zv4, x_cov=eye4,
-                  x_true=None, v_true=None, done=False):
+                  x_true=None, v_true=None, done=False,
+                  state_window=5):
         self.x_obs = x_obs    # observed position
         self.x_est = x_est    # estimated [pos:vel]
         self.x_pred = x_pred  # predicted [pos:vel]
         self.x_cov = x_cov    # state covariance (predicted/estimated)
         self.done = done
-        self.x_true = x_true  # true position
-        self.v_true = v_true  # true velocity
         self.new_track = True
+        self.x_true = collections.deque(maxlen=state_window)
+        self.v_true = collections.deque(maxlen=state_window)
 
     def SetTrueState(self, x_true, v_true):
-        self.x_true = x_true
-        self.v_true = v_true
+        self.x_true.append(x_true)
+        self.v_true.append(v_true)
 
     def GetTrueState(self):
-        return (self.x_true, self.v_true)
+        return (self.x_true[-1], self.v_true[-1])
+
+    def GetTruePositions(self, num_steps):
+        xlen = len(self.x_true)
+        return [self.x_true[i] for i in range(xlen-num_steps, xlen)]
 
     def SetObservation(self, x_obs):
         self.x_obs = x_obs
@@ -338,15 +349,23 @@ class KalmanFilterBasic(KalmanFilterGeneric):
     def ComputeError(self):
         frame_pos_error = 0
         frame_vel_error = 0
+        frame_pos_rel_error = 0
         for oid, state in self.state.items():
             est = state.GetEstimatedState()
             xe, ve = est[0:2], est[2:4]
             xt, vt = state.GetTrueState()
-            frame_pos_error += np.sqrt(np.sum(np.power(xe-xt, 2)))
+            x = state.GetTruePositions(2)
+            pos_error = np.sqrt(np.sum(np.power(xe-xt, 2)))
+            frame_pos_error += pos_error
+            displacement = np.sqrt(np.sum(np.power(x[0]-x[1], 2)))
+            if displacement != 0:
+                frame_pos_rel_error += pos_error/displacement
             frame_vel_error += np.sqrt(np.sum(np.power(ve-vt, 2)))
         num_objects = len(self.state)
         self.pos_error.append(frame_pos_error/num_objects)
         self.vel_error.append(frame_vel_error/num_objects)
+        self.pos_rel_error.append(frame_pos_rel_error/num_objects)
+
 
     '''
     Save error image.
@@ -542,7 +561,7 @@ Error = distance between track and observed distance, this corresponds to
 maximum likelihood when all observations are available (no occlusion).
 Association is done using brute force search, for Kalman filter based predictor.
 '''
-class KalmanFilterWithAssociation(KalmanFilterGeneric):
+class KalmanFilterWithAssociation(KalmanFilterBasic):
     '''
     The init method takes in input data directory, output directory,
     and an initializer method for newly appeared objects.
@@ -553,11 +572,10 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
                  OptimalMatch=SearchOptimalNearest,
                  ObjectInitializer=SimpleRandomInitializer):
         super(KalmanFilterWithAssociation, self).\
-            __init__(data_dir, output_dir)
+            __init__(data_dir, output_dir, ObjectInitializer)
         self.ObsTrackError    = ObsTrackDist
         self.NoObsTrackError  = DistFromClosestBoundary
         self.OptimalMatch     = OptimalMatch
-        self.InitializeObject = ObjectInitializer
         self.unoccluded_only  = unoccluded_only
 
     '''
@@ -615,32 +633,3 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
         #        num_objects += 1
 
         self.state = state
-
-
-    '''
-    Compute error.
-    '''
-    def ComputeError(self):
-        frame_pos_error = 0
-        frame_vel_error = 0
-        for oid, state in self.state.items():
-            est = state.GetEstimatedState()
-            xe, ve = est[0:2], est[2:4]
-            xt, vt = state.GetTrueState()
-            frame_pos_error += np.sqrt(np.sum(np.power(xe-xt, 2)))
-            frame_vel_error += np.sqrt(np.sum(np.power(ve-vt, 2)))
-        num_objects = len(self.state)
-        self.pos_error.append(frame_pos_error/num_objects)
-        self.vel_error.append(frame_vel_error/num_objects)
-
-    '''
-    Save error image.
-    '''
-    def SaveEstimateAsImage(self, frame):
-        file_name = os.path.join(self.data_dir, 'state_%08d.png' % frame)
-        im_arr = utils.ReadImage(file_name)
-        for oid, state in self.state.items():
-            state.SetImage(im_arr)
-        out_file_name = os.path.join(self.output_dir, \
-                                    'estimate_%08d.png' % frame)
-        utils.SaveImage(im_arr, out_file_name)

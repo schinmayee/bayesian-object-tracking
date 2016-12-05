@@ -1,2 +1,3 @@
-baseline ../baseline_output
-kalman ../predict_output
+baseline-basic ../results/baseline_basic
+kalman-basic ../results/basic
+kalman-unoccluded ../results/unoccluded
