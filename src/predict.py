@@ -8,7 +8,8 @@ from scipy.stats import multivariate_normal as mvnorm
 import data_reader
 import utils
 
-est_color = 50
+est_color_new = 25
+est_color_old = 50
 
 
 '''
@@ -88,6 +89,7 @@ class KalmanObjectState(object):
         self.done = done
         self.x_true = x_true  # true position
         self.v_true = v_true  # true velocity
+        self.new_track = True
 
     def SetTrueState(self, x_true, v_true):
         self.x_true = x_true
@@ -129,17 +131,29 @@ class KalmanObjectState(object):
     def IsDone(self):
         return self.done
 
+    def SetNewTrack(self):
+        self.new_track = True
+
+    def SetOldTrack(self):
+        self.new_track = False
+
     def SetImage(self, im_arr):
         num = np.shape(im_arr)
         delta = [1.0/n for n in num]
         xc = np.round(self.x_est[0:2]/delta)
         w = math.ceil(num[0]/100.0)
-        min_pt = np.array(xc - w, dtype=int)
-        max_pt = np.array(xc + w, dtype=int)
+        width = 1
+        if self.new_track:
+            width = 1.5
+        min_pt = np.array(xc - width*w, dtype=int)
+        max_pt = np.array(xc + width*w, dtype=int)
         x_min = max(int(min_pt[0]), 0)
         y_min = max(int(min_pt[1]), 0)
         x_max = min(int(max_pt[0]), num[0])
         y_max = min(int(max_pt[1]), num[1])
+        est_color = est_color_old
+        if self.new_track:
+            est_color = est_color_new
         for i in range(x_min, x_max):
             for j in range(y_min, y_max):
                 im_arr[i,j] = int(est_color)
@@ -375,30 +389,29 @@ unmatched, then there is a penalty given by no-match error unassigned_errors.
 def SearchOptimalRecursive(unassigned_errors, gated_tracks,
                            assigned_tracks, obs_id):
     num_tracks = len(unassigned_errors)
+    num_obs = len(gated_tracks)
     gated = gated_tracks[obs_id]
     errors = dict()
     assignments = dict()
     # case: this observation defines a new track
     rec_error, rec_match = 0, dict()
-    if obs_id+1 < len(gated_tracks):
+    if obs_id+1 < num_obs:  # not the last observation
         rec_error, rec_match = SearchOptimalRecursive(
             unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
         )
-    if obs_id == 0:
-        # add errors from tracks that are not assigned to any observation
-        errors[num_tracks] = rec_error + \
-                sum([unassigned_errors[i] for i in assigned_tracks if not
-                     assigned_tracks])
-    else:
-        errors[num_tracks] = rec_error
+    errors[num_tracks] = rec_error
     assignments[num_tracks] = rec_match
+    if obs_id == num_obs-1:
+        errors[num_tracks] += \
+                sum([unassigned_errors[i] for i in range(num_tracks) if not
+                     assigned_tracks[i]])
     # case: this observation is from one of existing tracks
     for tid, error in gated.items():
         # check that track is unassigned, and error is finite
-        if not assigned_tracks[tid] and error < float('inf'):
+        if not assigned_tracks[tid]:
             assigned_tracks[tid] = True
             rec_error, rec_match = 0, dict()
-            if obs_id+1 < len(gated_tracks):  # not the last observation
+            if obs_id+1 < num_obs:  # not the last observation
                 rec_error, rec_match = SearchOptimalRecursive(
                     unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
                 )
@@ -406,11 +419,11 @@ def SearchOptimalRecursive(unassigned_errors, gated_tracks,
             # a penalty for each unassigned track in case this is the 0th
             # observation (top of resursive call stack)
             errors[tid] = error + rec_error
-            if obs_id == 0:
+            if obs_id == num_obs-1:
                 errors[tid] += sum([unassigned_errors[i] for i in
-                                    assigned_tracks if not assigned_tracks])
-            assignments[tid] = rec_match
+                                range(num_tracks) if not assigned_tracks[i]])
             assigned_tracks[tid] = False
+            assignments[tid] = rec_match
     # get assignment that gives smallest error
     min_error_tid = min(errors, key=errors.get)
     min_error = errors[min_error_tid]
@@ -438,7 +451,7 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
     v_mean = parameters['v_mean']
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
-    threshold = max(2*a_sigma*dt*dt, v_mean*dt*np.sqrt(2))
+    threshold = a_sigma*dt*dt*8
     gated_tracks = dict()
     for obs_id, obs_pos in enumerate(observations):
         gated = dict()
@@ -446,7 +459,7 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
         for tid, _ in enumerate(state_all):
             t_state = state_all[tid]
             error = ObsTrackDist(t_state, obs_pos)
-            if error <= threshold:
+            if error <= 8*threshold:
                 gated[tid] = error
     num_tracks = len(state_all)
     assigned_tracks = [False] * num_tracks
@@ -456,7 +469,7 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
         t_error = DistFromClosestBoundary(t_state)
         if t_error < threshold:
             unassigned_errors[tid] = t_error
-    _, match = SearchOptimalRecursive(
+    error, match = SearchOptimalRecursive(
         unassigned_errors, gated_tracks, assigned_tracks, 0)
     return match, unassigned_errors
 
@@ -495,7 +508,6 @@ def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
         for tid, _ in enumerate(state_all):
             t_state = state_all[tid]
             dist = ObsTrackDist(t_state, obs_pos)
-            print(dist, threshold)
             if dist <= threshold:
                 gated[tid] = -math.log(ObsTrackProb(
                     t_state, obs_pos, covariance))
@@ -504,7 +516,7 @@ def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
     unassigned_errors = [float('inf')] * num_tracks
     for tid, _ in enumerate(state_all):
         t_state = state_all[tid]
-        prob = 0
+        prob = list()
         n = int(math.ceil(threshold/delta))
         for i in range(-n, n+1):
             for j in range(-n, n+1):
@@ -512,14 +524,10 @@ def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
                     obs_pos = (t_state.GetPredictedState()[0:2] +
                                [float(i)*delta, float(j)*delta])
                     if NotVisible(obs_pos, visible_mask):
-                        prob += ObsTrackProb(t_state, obs_pos, covariance)
-        if prob != 0:
-            unassigned_errors[tid] = -math.log(prob)
-    print('Unassigned')
-    print(unassigned_errors)
-    print('Gated')
-    print(gated_tracks)
-    _, match = SearchOptimalRecursive(
+                        prob.append(ObsTrackProb(t_state, obs_pos, covariance))
+        if len(prob) != 0:
+            unassigned_errors[tid] = -math.log(max(prob))
+    error, match = SearchOptimalRecursive(
         unassigned_errors, gated_tracks, assigned_tracks, 0)
     return match, unassigned_errors
 
@@ -572,13 +580,11 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
         state = dict()
         num_objects = len(obs_data)
         tracks_assigned = list()
-        print('Match')
-        print(match)
-        print(unassigned_errors)
         for oid, m in match.items():
             if not m['new_track']:
                 tid = m['track_id']
                 object_state = self.state[tid]
+                object_state.SetOldTrack()
                 obs_pos = input_data[oid][2]
                 object_state.SetObservation(np.array(obs_pos, dtype=float))
                 state[oid] = object_state
@@ -588,10 +594,10 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
                     self.parameters, self.F, self.Q,
                     self.H, self.R, input_data[oid][2])
                 object_state.MarkDone()
+                object_state.SetNewTrack()
                 state[oid] = object_state
             state[oid].SetTrueState(np.array(input_data[oid][0], dtype=float),
                                     np.array(input_data[oid][1], dtype=float))
-        print(tracks_assigned)
         for tid, _ in enumerate(self.state):
             t_state = self.state[tid]
             if tid not in tracks_assigned:
@@ -600,8 +606,8 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
                     continue
                 if unassigned_errors[tid] == float('inf'):
                     continue
-                print('Keeping', tid, t_state.GetPredictedState())
                 t_state.MarkDone()
+                t_state.SetOldTrack()
                 state[num_objects] = t_state
                 num_objects += 1
 
