@@ -451,8 +451,10 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
     v_mean = parameters['v_mean']
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
-    threshold = a_sigma*dt*dt*8
+    threshold = 8*a_sigma*dt*dt
+    num_tracks = len(state_all)
     gated_tracks = dict()
+    track_error = [list()]*num_tracks
     for obs_id, obs_pos in enumerate(observations):
         gated = dict()
         gated_tracks[obs_id] = gated
@@ -461,14 +463,15 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
             error = ObsTrackDist(t_state, obs_pos)
             if error <= 8*threshold:
                 gated[tid] = error
-    num_tracks = len(state_all)
+                track_error[tid].append(error)
     assigned_tracks = [False] * num_tracks
     unassigned_errors = [float('inf')] * num_tracks
     for tid, _ in enumerate(state_all):
         t_state = state_all[tid]
         t_error = DistFromClosestBoundary(t_state)
+        # penalize for choosing to not associate a track with any observation
         if t_error < threshold:
-            unassigned_errors[tid] = t_error
+            unassigned_errors[tid] = max(max(track_error[tid]), t_error)
     error, match = SearchOptimalRecursive(
         unassigned_errors, gated_tracks, assigned_tracks, 0)
     return match, unassigned_errors
