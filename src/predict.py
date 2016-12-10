@@ -45,13 +45,36 @@ class Predictor(object):
     Compute error in prediction.
     '''
     def ComputeError(self):
-        raise NotImplemented('Call')
+        frame_pos_error = 0
+        frame_vel_error = 0
+        frame_pos_rel_error = 0
+        for oid, state in self.state.items():
+            est = state.GetEstimatedState()
+            xe, ve = est[0:2], est[2:4]
+            xt, vt = state.GetTrueState()
+            x = state.GetTruePositions(2)
+            pos_error = np.sqrt(np.sum(np.power(xe-xt, 2)))
+            frame_pos_error += pos_error
+            displacement = np.sqrt(np.sum(np.power(x[0]-x[1], 2)))
+            if displacement != 0:
+                frame_pos_rel_error += pos_error/displacement
+            frame_vel_error += np.sqrt(np.sum(np.power(ve-vt, 2)))
+        num_objects = len(self.state)
+        self.pos_error.append(frame_pos_error/num_objects)
+        self.vel_error.append(frame_vel_error/num_objects)
+        self.pos_rel_error.append(frame_pos_rel_error/num_objects)
 
     '''
-    Compute error in prediction.
+    Save error image.
     '''
     def SaveEstimateAsImage(self, frame):
-        raise NotImplemented('Call')
+        file_name = os.path.join(self.data_dir, 'state_%08d.png' % frame)
+        im_arr = utils.ReadImage(file_name)
+        for oid, state in self.state.items():
+            state.SetImage(im_arr)
+        out_file_name = os.path.join(self.output_dir, \
+                                    'estimate_%08d.png' % frame)
+        utils.SaveImage(im_arr, out_file_name)
 
     '''
     Run predictor.
@@ -343,42 +366,6 @@ class KalmanFilterBasic(KalmanFilterGeneric):
             self.state[oid].SetTrueState(np.array(obj_state[0], dtype=float),
                                          np.array(obj_state[1], dtype=float))
 
-    '''
-    Compute error.
-    '''
-    def ComputeError(self):
-        frame_pos_error = 0
-        frame_vel_error = 0
-        frame_pos_rel_error = 0
-        for oid, state in self.state.items():
-            est = state.GetEstimatedState()
-            xe, ve = est[0:2], est[2:4]
-            xt, vt = state.GetTrueState()
-            x = state.GetTruePositions(2)
-            pos_error = np.sqrt(np.sum(np.power(xe-xt, 2)))
-            frame_pos_error += pos_error
-            displacement = np.sqrt(np.sum(np.power(x[0]-x[1], 2)))
-            if displacement != 0:
-                frame_pos_rel_error += pos_error/displacement
-            frame_vel_error += np.sqrt(np.sum(np.power(ve-vt, 2)))
-        num_objects = len(self.state)
-        self.pos_error.append(frame_pos_error/num_objects)
-        self.vel_error.append(frame_vel_error/num_objects)
-        self.pos_rel_error.append(frame_pos_rel_error/num_objects)
-
-
-    '''
-    Save error image.
-    '''
-    def SaveEstimateAsImage(self, frame):
-        file_name = os.path.join(self.data_dir, 'state_%08d.png' % frame)
-        im_arr = utils.ReadImage(file_name)
-        for oid, state in self.state.items():
-            state.SetImage(im_arr)
-        out_file_name = os.path.join(self.output_dir, \
-                                    'estimate_%08d.png' % frame)
-        utils.SaveImage(im_arr, out_file_name)
-
 
 def ObsTrackDist(state, obs_pos):
     pred_state = state.GetPredictedState()
@@ -392,6 +379,12 @@ def DistFromClosestBoundary(state):
     xmin = min(pos[0], 1-pos[0])
     ymin = min(pos[1], 1-pos[1])
     return (max(min(xmin, ymin), 0))
+
+def MVNormalPDF(mean, variance, x):
+    t = -0.5 * np.matmul((x-mean),
+                         np.matmul(np.linalg.inv(variance), (x-mean)))
+    d = np.linalg.det(2*math.pi*variance)
+    return math.exp(t)/math.sqrt(d)
 
 def ObsTrackProb(state, obs_pos, covariance):
     pred_state = state.GetPredictedState()[0:2]
@@ -561,7 +554,7 @@ Error = distance between track and observed distance, this corresponds to
 maximum likelihood when all observations are available (no occlusion).
 Association is done using brute force search, for Kalman filter based predictor.
 '''
-class KalmanFilterWithAssociation(KalmanFilterBasic):
+class KalmanFilterWithAssociation(KalmanFilterGeneric):
     '''
     The init method takes in input data directory, output directory,
     and an initializer method for newly appeared objects.
@@ -572,7 +565,8 @@ class KalmanFilterWithAssociation(KalmanFilterBasic):
                  OptimalMatch=SearchOptimalNearest,
                  ObjectInitializer=SimpleRandomInitializer):
         super(KalmanFilterWithAssociation, self).\
-            __init__(data_dir, output_dir, ObjectInitializer)
+            __init__(data_dir, output_dir)
+        self.InitializeObject = ObjectInitializer
         self.ObsTrackError    = ObsTrackDist
         self.NoObsTrackError  = DistFromClosestBoundary
         self.OptimalMatch     = OptimalMatch
