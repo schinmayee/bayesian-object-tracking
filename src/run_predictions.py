@@ -53,7 +53,10 @@ if __name__ == '__main__':
         kalman = predict.KalmanFilterWithAssociation(
             args.data_dir, args.output_dir)
     elif args.predictor == 'unoccluded_most_likely':
-        print('Unoccluded most likely not complete yet')
+        kalman = predict.KalmanFilterWithAssociation(
+            args.data_dir, args.output_dir,
+            OptimalMatch = predict.SearchOptimalUnoccludedML
+        )
     elif args.predictor == 'occluded_most_likely':
         print('Occluded most likley not complete yet')
         #kalman = predict.KalmanFilterWithAssociation(
