@@ -5,7 +5,6 @@ import os
 import math
 import collections
 import numpy as np
-from scipy.stats import multivariate_normal as mvnorm
 import data_reader
 import utils
 
@@ -380,16 +379,63 @@ def DistFromClosestBoundary(state):
     ymin = min(pos[1], 1-pos[1])
     return (max(min(xmin, ymin), 0))
 
-def MVNormalPDF(mean, variance, x):
+def NormalPDF(mean, covariance, x):
     t = -0.5 * np.matmul((x-mean),
-                         np.matmul(np.linalg.inv(variance), (x-mean)))
-    d = np.linalg.det(2*math.pi*variance)
+                         np.matmul(np.linalg.inv(covariance), (x-mean)))
+    d = np.linalg.det(2*math.pi*covariance)
     return math.exp(t)/math.sqrt(d)
 
+
+nside = 200
+ndim  = 2*nside + 1
+pdf_scale = 8.0/float(2*nside)
+# go from -4*sigma to 4*sigma, with ndim points
+computed_pdfs = dict()
+def InitializeNormalPDF(name, covariance):
+    pdf = np.zeros(shape=[ndim, ndim])
+    pdfs[name] = pdf
+    cov_det = np.linalg.det(covariance)
+    delta = (pdf_scale *
+             np.matmul(covariance, np.ones(shape=[2,], dtype=float))/cov_det)
+    zv2 = np.zeros(shape=[2,1], dtype=float)
+    for i in range(ndim):
+        for j in range(ndim):
+            il, jl = i - nside, j - nside
+            x = np.array([il*delta[0], jl*delta[1]])
+            computed_pdfs[name][i,j] = NormalPDF(zv2, covariance, x)
+
+def PDF(name, x, y):
+    i, j = int(round(x)), int(round(y))
+    if i < 0 or i > ndim:
+        return 0
+    if j < 0 or j > ndim:
+        return 0
+    return computed_pdfs['noise'][i,j]
+
 def ObsTrackProb(state, obs_pos, covariance):
-    pred_state = state.GetPredictedState()[0:2]
+    pred_state = state.GetPredictedState()
     pos = pred_state[0:2]
-    return mvnorm.pdf(pred_state, mean=pos, cov=covariance)
+    pdf = NormalPDF(pred_state, covariance, obs_pos)
+    cov_det = np.linalg.det(covariance)
+    delta = (pdf_scale *
+             np.covariance, np.ones(shape=[2,], dtype=float)/cov_det)
+    return pdf * delta[0] * delta[1]
+
+def MatchOutsideProb(pos, covariance):
+    cov_det = np.linalg.det(covariance)
+    delta = (pdf_scale *
+             np.matmul(covariance, np.ones(shape=[2,], dtype=float))/cov_det)
+    zv2 = np.zeros(shape=[2,1], dtype=float)
+    prob = 0
+    for i in range(ndim):
+        for j in range(ndim):
+            il, jl = i - nside, j - nside
+            mpos = np.array([pos[0]+il*delta[0], pos[1]+jl*delta[1]])
+            if mpos[0] < 0 or mpos[0] > 1 or mpos[1] < 0 or mpos[1] > 1:
+                prob += PDF['noise'][i,j]
+            else:
+                continue
+    return prob * delta[0] * delta[1]
 
 
 '''
@@ -398,25 +444,33 @@ errors.
 All observations must match to a track or create a new track. If a track is
 unmatched, then there is a penalty given by no-match error unassigned_errors.
 '''
-def SearchOptimalRecursive(unassigned_errors, gated_tracks,
-                           assigned_tracks, obs_id):
-    num_tracks = len(unassigned_errors)
+def SearchOptimalRecursive(unassigned_track_errors, unassigned_obs_errors,
+                           gated_tracks, assigned_tracks, obs_id):
+    num_tracks = len(unassigned_track_errors)
     num_obs = len(gated_tracks)
     gated = gated_tracks[obs_id]
     errors = dict()
     assignments = dict()
-    # case: this observation defines a new track
+    # rec_loss, the loss if we do not match this observation to anything
+    # (create a new track for unonccluded case)
+    obs_unmatched_error = unassigned_obs_errors[obs_id]
+    # case: this observation is unmatched
+    # obs_unmatched_error loss for not matching the observation
+    # (creating a new track)
     rec_error, rec_match = 0, dict()
     if obs_id+1 < num_obs:  # not the last observation
         rec_error, rec_match = SearchOptimalRecursive(
-            unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
+            unassigned_track_errors, unassigned_obs_errors,
+            gated_tracks, assigned_tracks, obs_id+1
         )
-    errors[num_tracks] = rec_error
+    errors[num_tracks] = obs_unmatched_error + rec_error
     assignments[num_tracks] = rec_match
+    # a penalty for each unassigned track in case this is the last
+    # observation (last resursive call stack)
     if obs_id == num_obs-1:
         errors[num_tracks] += \
-                sum([unassigned_errors[i] for i in range(num_tracks) if not
-                     assigned_tracks[i]])
+                sum([unassigned_track_errors[i] for i in range(num_tracks)
+                     if not assigned_tracks[i]])
     # case: this observation is from one of existing tracks
     for tid, error in gated.items():
         # check that track is unassigned, and error is finite
@@ -425,14 +479,15 @@ def SearchOptimalRecursive(unassigned_errors, gated_tracks,
             rec_error, rec_match = 0, dict()
             if obs_id+1 < num_obs:  # not the last observation
                 rec_error, rec_match = SearchOptimalRecursive(
-                    unassigned_errors, gated_tracks, assigned_tracks, obs_id+1
+                    unassigned_track_errors, unassigned_obs_errors,
+                    gated_tracks, assigned_tracks, obs_id+1
                 )
             # error for this assignment is [observation-track_pos] error plus
-            # a penalty for each unassigned track in case this is the 0th
-            # observation (top of resursive call stack)
             errors[tid] = error + rec_error
+            # a penalty for each unassigned track in case this is the last
+            # observation (last resursive call stack)
             if obs_id == num_obs-1:
-                errors[tid] += sum([unassigned_errors[i] for i in
+                errors[tid] += sum([unassigned_track_errors[i] for i in
                                 range(num_tracks) if not assigned_tracks[i]])
             assigned_tracks[tid] = False
             assignments[tid] = rec_match
@@ -441,7 +496,7 @@ def SearchOptimalRecursive(unassigned_errors, gated_tracks,
     min_error = errors[min_error_tid]
     min_assignment = assignments[min_error_tid]
     min_assignment[obs_id] = dict()
-    if min_error_tid == len(unassigned_errors):
+    if min_error_tid == len(unassigned_track_errors):
         # create a new track for this observation
         min_assignment[obs_id]['new_track'] = True
     else:
@@ -465,6 +520,8 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
     dt = parameters['dt']
     threshold = 64*a_sigma*dt*dt
     num_tracks = len(state_all)
+    num_obs = len(observations)
+    # gated tracks with track-obs match score
     gated_tracks = dict()
     track_error = [list()]*num_tracks
     for obs_id, obs_pos in enumerate(observations):
@@ -476,26 +533,21 @@ def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
             if error <= threshold:
                 gated[tid] = error
                 track_error[tid].append(error)
-    assigned_tracks = [False] * num_tracks
-    unassigned_errors = [float('inf')] * num_tracks
-    for tid, _ in enumerate(state_all):
-        t_state = state_all[tid]
+    # penalty for not assigning a track
+    unassigned_track_errors = [float('inf')] * num_tracks
+    for tid, t_state in state_all.items():
         t_error = DistFromClosestBoundary(t_state)
         # penalize for choosing to not associate a track with any observation
         if t_error < threshold:
-            unassigned_errors[tid] = max(max(track_error[tid]), t_error)
+            unassigned_track_errors[tid] = max(max(track_error[tid]), t_error)
+    # penalty for creating a new track for an observation
+    unassigned_obs_errors = [0] * num_obs
+    # search optimal
+    assigned_tracks = [False] * num_tracks
     error, match = SearchOptimalRecursive(
-        unassigned_errors, gated_tracks, assigned_tracks, 0)
-    return match, unassigned_errors
-
-
-def NotVisible(obs_pos, visible_mask):
-    if (obs_pos[0] < 0 or obs_pos[0] > 1 or
-        obs_pos[1] < 0 or obs_pos[1] > 1):
-        return True
-    n = np.shape(visible_mask)[0]
-    coord = np.round(obs_pos/n)
-    return (visible_mask[int(coord[0]), int(coord[1])] == 0)
+        unassigned_track_errors, unassigned_obs_errors,
+        gated_tracks, assigned_tracks, 0)
+    return match
 
 
 '''
@@ -506,7 +558,9 @@ All observations must match to a track or create a new track. If a track is
 unmatched, then there is a penalty, computed using NoObsTrackError.
 Tracks that are outside the frame domain are not penalized.
 '''
-def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
+unoccluded_ml_initialized = False
+def SearchOptimalUnoccludedML(state_all, observations, parameters, visible_mask):
+    # parameters and probability distribution
     pos_sigma = parameters['pos_sigma']
     v_mean = parameters['v_mean']
     a_sigma = parameters['a_sigma']
@@ -514,37 +568,52 @@ def SearchOptimalMostLikely(state_all, observations, parameters, visible_mask):
     viewer_pos = parameters['viewer_pos']
     threshold = max(2*a_sigma*dt*dt, v_mean*dt*math.sqrt(2))
     delta = 0.5/float(np.shape(visible_mask)[0])
-    covariance = np.eye(2, dtype=float) * (a_sigma*a_sigma +
-                                           pos_sigma*pos_sigma)
+    noise_covariance = np.eye(2, dtype=float) * (pos_sigma * pos_sigma)
+    if not unoccluded_ml_initialized:
+        mean = zeros(shape=[2,], dtype = float)
+        InitializeNoisePDF(mean, covariance)
+    num_tracks = len(state_all)
+    num_obs = len(observations)
+    # gated tracks with track-obs match score
     gated_tracks = dict()
     for obs_id, obs_pos in enumerate(observations):
         gated = dict()
         gated_tracks[obs_id] = gated
-        for tid, _ in enumerate(state_all):
+        for tid, t_state in state_all.items():
             t_state = state_all[tid]
             dist = ObsTrackDist(t_state, obs_pos)
             if dist <= threshold:
-                gated[tid] = -math.log(ObsTrackProb(
-                    t_state, obs_pos, covariance))
-    num_tracks = len(state_all)
+                prob = ObsTrackProb(t_state, obs_pos, covariance)
+                gated[tid] = -math.log(prob)
+    # penalty for not assigning a track
+    unassigned_track_errors = [float('inf')] * num_tracks
+    for tid, t_state in state_all.items():
+        pred_state = state.GetPredictedState()
+        pred_pos = pred_state[0:2]
+        prob = MatchOutsideProb(pred_pos, noise_covariance)
+        if prob != 0:
+            unassigned_track_errors[tid] = -math.log(prob)
+    # penalty for creating a new track for an obervation
+    unassigned_obs_errors = [float('inf')] * num_obs
+    for obs_id, obs_pos in enumerate(observations):
+        prob = MatchOutsideProb(obs_pos, noise_obervations)
+        if prob != 0:
+            unassigned_obs_errors = -math.log(prob)
+    # search optimal
     assigned_tracks = [False] * num_tracks
-    unassigned_errors = [float('inf')] * num_tracks
-    for tid, _ in enumerate(state_all):
-        t_state = state_all[tid]
-        prob = list()
-        n = int(math.ceil(threshold/delta))
-        for i in range(-n, n+1):
-            for j in range(-n, n+1):
-                if i*i + j*j <= n*n:
-                    obs_pos = (t_state.GetPredictedState()[0:2] +
-                               [float(i)*delta, float(j)*delta])
-                    if NotVisible(obs_pos, visible_mask):
-                        prob.append(ObsTrackProb(t_state, obs_pos, covariance))
-        if len(prob) != 0:
-            unassigned_errors[tid] = -math.log(max(prob))
     error, match = SearchOptimalRecursive(
-        unassigned_errors, gated_tracks, assigned_tracks, 0)
-    return match, unassigned_errors
+        unassigned_track_errors, unassigned_obs_errors,
+        gated_tracks, assigned_tracks, 0)
+    return match
+
+
+def NotVisible(obs_pos, visible_mask):
+    if (obs_pos[0] < 0 or obs_pos[0] > 1 or
+        obs_pos[1] < 0 or obs_pos[1] > 1):
+        return True
+    n = np.shape(visible_mask)[0]
+    coord = np.round(obs_pos/n)
+    return (visible_mask[int(coord[0]), int(coord[1])] == 0)
 
 
 '''
@@ -590,7 +659,7 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
                         input_data]
         visible_mask = utils.ReadImage(
             os.path.join(self.data_dir, 'visible_%08d.png' % frame))
-        match, unassigned_errors = self.OptimalMatch(
+        match = self.OptimalMatch(
             self.state, obs_data, self.parameters, visible_mask)
         state = dict()
         num_objects = len(obs_data)
