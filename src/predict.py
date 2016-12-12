@@ -633,14 +633,14 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
     The init method takes in input data directory, output directory,
     and an initializer method for newly appeared objects.
     '''
-    def __init__(self, data_dir, output_dir, unoccluded_only=False,
+    def __init__(self, data_dir, output_dir, occluded=False,
                  OptimalMatch=SearchOptimalNearest,
                  ObjectInitializer=SimpleRandomInitializer):
         super(KalmanFilterWithAssociation, self).\
             __init__(data_dir, output_dir)
         self.InitializeObject = ObjectInitializer
         self.OptimalMatch     = OptimalMatch
-        self.unoccluded_only  = unoccluded_only
+        self.occluded         = occluded
 
     '''
     Read observations for given frame, and match observations to tracks.

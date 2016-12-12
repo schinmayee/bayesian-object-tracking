@@ -88,8 +88,11 @@ def IsUnoccluded(viewer_pos, dist, angle, half_angle, objects):
     angle_min = angle - half_angle
     angle_max = angle + half_angle
     for o in objects:
-        if o.dist < dist:
-            o_min, o_max = o.angle-o.half_angle, o.angle+o.half_angle
+        if not o.IsUnoccluded():  # ignore occluded objects
+            continue
+        if o.dist_obs < dist:
+            o_min = o.angle_obs - o.half_angle_obs
+            o_max = o.angle_obs + o.half_angle_obs
             if angle_max > o_min and angle_max < o_max:
                 angle_max = min(angle_max, o_min)
             if angle_min > o_min and angle_min < o_max:
@@ -108,6 +111,11 @@ class CircObject(SimObject):
         self.angle = None  # angle that object's center forms with y axis
         self.half_angle = None  # half angle formed by the object at viewer
         self.dist = None  # distance from viewer
+        # observed angles and distance is what sensor sees
+        # should exclude truly occluded objects which the sensor does not see
+        self.angle_obs = None  # angle that object's center forms
+        self.half_angle_obs = None  # half angle formed by the object
+        self.dist_obs = None  # distance from viewer
         self.unoccluded = False
 
     def IsInFrame(self):
@@ -117,10 +125,20 @@ class CircObject(SimObject):
                 self.pos[1] - self.radius <= 1 + self.eps)
 
     def UpdateDistanceAndAngle(self, viewer_pos):
-        rel_pos = self.pos - viewer_pos  # angle from y axis
-        self.angle = math.atan2(rel_pos[0], rel_pos[1])
+        rel_pos = viewer_pos - self.pos  # angle from y axis
+        self.angle = math.atan2(rel_pos[1], rel_pos[0])
         self.dist = np.sqrt(np.sum(np.power(rel_pos, 2)))
-        self.half_angle = math.atan2(self.radius, self.dist)
+        if self.dist < self.radius:
+            self.half_angle = math.pi/2
+        else:
+            self.half_angle = math.asin(self.radius/self.dist)
+        rel_pos_obs = viewer_pos - self.pos_obs  # angle from y axis
+        self.angle_obs = math.atan2(rel_pos_obs[1], rel_pos_obs[0])
+        self.dist_obs = np.sqrt(np.sum(np.power(rel_pos_obs, 2)))
+        if self.dist_obs < self.radius:
+            self.half_angle_obs = math.pi/2
+        else:
+            self.half_angle_obs = math.asin(self.radius/self.dist_obs)
 
 
     def MarkUnoccluded(self, viewer_pos, objects):
@@ -298,7 +316,6 @@ class Simulator(object):
                 a = self.GetAcceleration(o)
                 o.pos = o.pos + o.vel*self.dt + 0.5*a*self.dt*self.dt
                 o.vel = o.vel + a*self.dt
-                o.UpdateDistanceAndAngle(self.viewer_pos)
 
                 # remove objects that are out of frame
                 if o.IsInFrame():
@@ -306,6 +323,9 @@ class Simulator(object):
                     keep_objects.append(o)
 
             self.objects = keep_objects
+
+            for o in self.objects:
+                o.UpdateDistanceAndAngle(self.viewer_pos)
 
             # unoccluded objects
             for o in self.objects:
@@ -379,10 +399,13 @@ class SimpleRandomSimulator(Simulator):
         for i in range(n):
             for j in range(n):
                 pos = np.array([i*delta, j*delta], dtype=float)
-                rel_pos = pos-self.viewer_pos
+                rel_pos = self.viewer_pos - pos
                 dist = np.sqrt(np.sum(np.power(rel_pos, 2)))
-                angle = math.atan2(rel_pos[0], rel_pos[1])
-                half_angle = math.atan2(self.radius, dist)
+                angle = math.atan2(rel_pos[1], rel_pos[0])
+                if dist < self.radius:
+                    half_angle = math.pi/2
+                else:
+                    half_angle = math.asin(self.radius/dist)
                 if IsUnoccluded(
                     self.viewer_pos, dist, angle, half_angle, self.objects):
                     im_mask[i,j] = 255
