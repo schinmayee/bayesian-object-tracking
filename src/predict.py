@@ -119,6 +119,7 @@ class KalmanObjectState(object):
         self.new_track = True
         self.x_true = collections.deque(maxlen=state_window)
         self.v_true = collections.deque(maxlen=state_window)
+        self.unmatched_counter = 0
 
     def SetTrueState(self, x_true, v_true):
         self.x_true.append(x_true)
@@ -139,6 +140,7 @@ class KalmanObjectState(object):
 
     def SetPredictedState(self, x_pred):
         self.x_pred = x_pred
+        self.x_est  = x_pred  # record estimate as predicted in case no update
 
     def GetPredictedState(self):
         return self.x_pred
@@ -169,6 +171,15 @@ class KalmanObjectState(object):
 
     def SetOldTrack(self):
         self.new_track = False
+
+    def RecordMatched(self):
+        self.unmatched_counter = 0
+
+    def RecordUnmatched(self):
+        self.unmatched_counter += 1
+
+    def NumTimesUnmatched(self):
+        return self.unmatched_counter
 
     def SetImage(self, im_arr):
         num = np.shape(im_arr)
@@ -440,6 +451,31 @@ def MatchOutsideProb(pos, covariance):
                 continue
     return prob * delta[0] * delta[1]
 
+def IsOccluded(pos, visible_mask):
+    if (pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1):
+        return False
+    n = np.shape(visible_mask)[0]
+    coord = np.round(pos*n)
+    if coord[0] < 0 or coord[0] >= 500 or coord[1] < 0 or coord[1] >= 500:
+        return False
+    return (visible_mask[int(coord[0]), int(coord[1])] == 0)
+
+def MatchOccludedProb(pos, covariance, visible_mask):
+    cov_det_rt = np.sqrt(np.linalg.det(covariance))
+    A = covariance / cov_det_rt
+    delta = (pdf_scale * np.matmul(A, np.ones(shape=[2,], dtype=float)))
+    prob = 0
+    for i in range(ndim):
+        for j in range(ndim):
+            il, jl = i - nside, j - nside
+            mpos = np.reshape(
+                np.array([pos[0]+il*delta[0], pos[1]+jl*delta[1]]), [2,])
+            if IsOccluded(mpos, visible_mask):
+                prob += PDF('noise', i,j)
+            else:
+                continue
+    return prob * delta[0] * delta[1]
+
 
 '''
 Brute-force search optimal match given observations, tracks, and match/no-match
@@ -562,7 +598,6 @@ All observations must match to a track or create a new track. If a track is
 unmatched, then there is a penalty, computed using NoObsTrackError.
 Tracks that are outside the frame domain are not penalized.
 '''
-unoccluded_ml_initialized = False
 def SearchOptimalUnoccludedML(state_all, observations, parameters,
                               visible_mask):
     # parameters and probability distribution
@@ -612,13 +647,58 @@ def SearchOptimalUnoccludedML(state_all, observations, parameters,
     return match
 
 
-def NotVisible(obs_pos, visible_mask):
-    if (obs_pos[0] < 0 or obs_pos[0] > 1 or
-        obs_pos[1] < 0 or obs_pos[1] > 1):
-        return True
-    n = np.shape(visible_mask)[0]
-    coord = np.round(obs_pos/n)
-    return (visible_mask[int(coord[0]), int(coord[1])] == 0)
+def SearchOptimalOccludedML(state_all, observations, parameters,
+                            visible_mask):
+    # parameters and probability distribution
+    pos_sigma = parameters['pos_sigma']
+    v_mean = parameters['v_mean']
+    a_sigma = parameters['a_sigma']
+    dt = parameters['dt']
+    viewer_pos = parameters['viewer_pos']
+    threshold = gate_factor*a_sigma*dt*dt
+    delta = 0.5/float(np.shape(visible_mask)[0])
+    noise_covariance = np.eye(2, dtype=float) * (pos_sigma * pos_sigma)
+    mean = np.zeros(shape=[2,], dtype = float)
+    num_tracks = len(state_all)
+    num_obs = len(observations)
+    # precompute pdf
+    InitializeNormalPDF('noise', noise_covariance)
+    # gated tracks with track-obs match score
+    gated_tracks = dict()
+    for obs_id, obs_pos in enumerate(observations):
+        gated = dict()
+        gated_tracks[obs_id] = gated
+        for tid, t_state in state_all.items():
+            t_state = state_all[tid]
+            dist = ObsTrackDist(t_state, obs_pos)
+            if dist <= threshold:
+                prob = ObsTrackProb(t_state, obs_pos, noise_covariance)
+                gated[tid] = -math.log(prob)
+    # penalty for not assigning a track
+    # 2 cases here, one is track goes out, second is track is occluded
+    unassigned_track_errors = [float('inf')] * num_tracks
+    for tid, t_state in state_all.items():
+        pred_state = t_state.GetPredictedState()
+        pred_pos = pred_state[0:2]
+        prob_outside  = MatchOutsideProb(pred_pos, noise_covariance)
+        prob_unoccluded = MatchOccludedProb(pred_pos, noise_covariance, visible_mask)
+        prob = max(prob_outside, prob_unoccluded)
+        if prob != 0:
+            unassigned_track_errors[tid] = -math.log(prob)
+    # penalty for creating a new track for an obervation
+    # this does not include occluded regions of previous frame,
+    # to keep things simpler
+    unassigned_obs_errors = [float('inf')] * num_obs
+    for obs_id, obs_pos in enumerate(observations):
+        prob = MatchOutsideProb(obs_pos, noise_covariance)
+        if prob != 0:
+            unassigned_obs_errors[obs_id] = -math.log(prob)
+    # search optimal
+    assigned_tracks = [False] * num_tracks
+    error, match = SearchOptimalRecursive(
+        unassigned_track_errors, unassigned_obs_errors,
+        gated_tracks, assigned_tracks, 0)
+    return match
 
 
 '''
@@ -635,12 +715,26 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
     '''
     def __init__(self, data_dir, output_dir, occluded=False,
                  OptimalMatch=SearchOptimalNearest,
-                 ObjectInitializer=SimpleRandomInitializer):
+                 ObjectInitializer=SimpleRandomInitializer
+                ):
         super(KalmanFilterWithAssociation, self).\
             __init__(data_dir, output_dir)
         self.InitializeObject = ObjectInitializer
         self.OptimalMatch     = OptimalMatch
         self.occluded         = occluded
+        # delete tracks not matched 4 consecutive times for occluded case
+        # if the track is not near the center, for some definition of center
+        self.not_matched_limit_boundary = 3
+        self.not_matched_limit_center = 8
+        self.eps = 4 * self.parameters['pos_sigma']
+
+    def DeleteTrack(self, state):
+        pos = state.GetPredictedState()
+        if (pos[0] > self.eps and pos[0] < 1-self.eps and
+            pos[1] > self.eps and pos[1] < 1-self.eps):
+            return (state.NumTimesUnmatched() > self.not_matched_limit_center)
+        return (state.NumTimesUnmatched() > self.not_matched_limit_boundary)
+
 
     '''
     Read observations for given frame, and match observations to tracks.
@@ -652,29 +746,32 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
             print('Error, did not find state file for frame %d' % frame)
             exit(1)
         input_data = data_reader.ReadStateShuffled(file_name)
-        if self.unoccluded_only:
-            obs_data = [np.reshape(np.array(obs_pos, dtype=float), [2,])
-                        for _, _, obs_pos, visible in input_data if visible]
-        else:
-            obs_data = [np.reshape(np.array(obs_pos, dtype=float), [2,])
-                        for _, _, obs_pos, _ in input_data]
+        # occluded case, keep only the visible data
+        if self.occluded:
+            input_data = [d for d in input_data if d[3]]
+        # read observations
+        obs_data = [np.reshape(np.array(obs_pos, dtype=float), [2,])
+                    for _, _, obs_pos, _ in input_data]
         visible_mask = utils.ReadImage(
             os.path.join(self.data_dir, 'visible_%08d.png' % frame))
+        # compute best match
         match = self.OptimalMatch(
             self.state, obs_data, self.parameters, visible_mask)
         state = dict()
         num_objects = len(obs_data)
-        tracks_assigned = list()
+        # update state using computed match
+        tracks_matched = set()
         for oid, m in match.items():
             if not m['new_track']:
                 tid = m['track_id']
                 object_state = self.state[tid]
                 object_state.SetOldTrack()
+                object_state.RecordMatched()
                 obs_pos = input_data[oid][2]
                 object_state.SetObservation(
                     np.reshape(np.array(obs_pos, dtype=float), [2,]))
                 state[oid] = object_state
-                tracks_assigned.append(tid)
+                tracks_matched.add(tid)
             else:
                 object_state = self.InitializeObject(
                     self.parameters, self.F, self.Q,
@@ -685,17 +782,20 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
             state[oid].SetTrueState(
                 np.reshape(np.array(input_data[oid][0], dtype=float), [2,]),
                 np.reshape(np.array(input_data[oid][1], dtype=float), [2,]))
-        #for tid, _ in enumerate(self.state):
-        #    t_state = self.state[tid]
-        #    if tid not in tracks_assigned:
-        #        pos = t_state.GetPredictedState()[0:2]
-        #        if pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1:
-        #            continue
-        #        if unassigned_errors[tid] == float('inf'):
-        #            continue
-        #        t_state.MarkDone()
-        #        t_state.SetOldTrack()
-        #        state[num_objects] = t_state
-        #        num_objects += 1
-
+        # if track unmatched for some number of observations, stop tracking
+        # keep tracks that have been matched recently enough number of times,
+        # and are inside the domain
+        if self.occluded:
+            num_tracks = len(self.state)
+            for tid in range(num_tracks):
+                if tid not in tracks_matched:
+                    object_state = self.state[tid]
+                    if self.DeleteTrack(object_state):
+                        continue
+                    object_state.SetOldTrack()
+                    object_state.RecordUnmatched()
+                    # don't try to update estimate as there is no observation
+                    object_state.MarkDone()
+                    state[len(state)] = object_state
+        # set state
         self.state = state

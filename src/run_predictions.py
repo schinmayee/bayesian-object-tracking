@@ -61,7 +61,7 @@ if __name__ == '__main__':
         print('Occluded most likley not complete yet')
         kalman = predict.KalmanFilterWithAssociation(
             args.data_dir, args.output_dir, occluded=True,
-            OptimalMatch = predict.SearchOptimalMostLikely)
+            OptimalMatch = predict.SearchOptimalOccludedML)
     else:
         print('Predictor should be one of ' + ', '.join(predictor_types))
         exit(1)
