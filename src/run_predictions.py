@@ -16,7 +16,8 @@ predictor_types = [
     'basic',
     'unoccluded_nearest',
     'unoccluded_most_likely',
-    'occluded_most_likely'
+    'occluded_most_likely',
+    'occluded_MAP'
                   ]
 
 parser = argparse.ArgumentParser("Run object tracking using Kalman filtering"
@@ -62,6 +63,11 @@ if __name__ == '__main__':
         kalman = predict.KalmanFilterWithAssociation(
             args.data_dir, args.output_dir, occluded=True,
             OptimalMatch = predict.SearchOptimalOccludedML)
+    elif args.predictor == 'occluded_MAP':
+        print('Occluded most likley not complete yet')
+        kalman = predict.KalmanFilterWithAssociation(
+            args.data_dir, args.output_dir, occluded=True,
+            OptimalMatch = predict.SearchOptimalOccludedMAP)
     else:
         print('Predictor should be one of ' + ', '.join(predictor_types))
         exit(1)

@@ -347,7 +347,7 @@ class SimpleRandomSimulator(Simulator):
         super(SimpleRandomSimulator, self).__init__(dt, max_objects, output_dir)
         self.v_mean = 1.0/(50.0*dt)
         self.a_mean = 0
-        self.a_sigma = self.v_mean
+        self.a_sigma = self.v_mean / (5.0*dt)
         self.prob = max_objects*self.v_mean*dt
         self.radius = 0.05
         self.pos_sigma = self.radius/2

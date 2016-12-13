@@ -476,6 +476,39 @@ def MatchOccludedProb(pos, covariance, visible_mask):
                 continue
     return prob * delta[0] * delta[1]
 
+def ObsTrackProbMAP(state, obs_pos, covariance):
+    pred_state = state.GetPredictedState()
+    pred_pos = pred_state[0:2]
+    return NormalPDF(pred_pos, covariance, obs_pos)
+
+def MatchOutsideProbMAP(pos, covariance, delta, num_pts):
+    prob = 0
+    side_pts = int((num_pts-1)/2)
+    for i in range(num_pts):
+        for j in range(num_pts):
+            il, jl = i - side_pts, j - side_pts
+            mpos = np.reshape(
+                np.array([pos[0]+il*delta, pos[1]+jl*delta]), [2,])
+            if mpos[0] < 0 or mpos[0] > 1 or mpos[1] < 0 or mpos[1] > 1:
+                prob += NormalPDF(pos, covariance, mpos)
+            else:
+                continue
+    return prob
+
+def MatchOccludedProbMAP(pos, covariance, visible_mask, delta, num_pts):
+    prob = 0
+    side_pts = int((num_pts-1)/2)
+    for i in range(num_pts):
+        for j in range(num_pts):
+            il, jl = i - side_pts, j - side_pts
+            mpos = np.reshape(
+                np.array([pos[0]+il*delta, pos[1]+jl*delta]), [2,])
+            if IsOccluded(mpos, visible_mask):
+                prob += NormalPDF(pos, covariance, mpos)
+            else:
+                continue
+    return prob
+
 
 '''
 Brute-force search optimal match given observations, tracks, and match/no-match
@@ -545,7 +578,7 @@ def SearchOptimalRecursive(unassigned_track_errors, unassigned_obs_errors,
     return min_error, min_assignment
 
 
-gate_factor = 64
+gate_factor = 5
 
 '''
 Get optimal match given observations and predicted tracks for one frame.
@@ -556,10 +589,12 @@ unmatched, then there is a penalty, computed using NoObsTrackError.
 Tracks that are outside the frame domain are not penalized.
 '''
 def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
+    pos_sigma = parameters['pos_sigma']
     v_mean = parameters['v_mean']
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
-    threshold = gate_factor*a_sigma*dt*dt
+    sigma = a_sigma*dt*dt/2.0 + pos_sigma
+    threshold = gate_factor*sigma
     num_tracks = len(state_all)
     num_obs = len(observations)
     # gated tracks with track-obs match score
@@ -606,9 +641,9 @@ def SearchOptimalUnoccludedML(state_all, observations, parameters,
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
     viewer_pos = parameters['viewer_pos']
-    threshold = gate_factor*a_sigma*dt*dt
-    delta = 0.5/float(np.shape(visible_mask)[0])
-    noise_covariance = np.eye(2, dtype=float) * (pos_sigma * pos_sigma)
+    sigma = a_sigma*dt*dt/2.0 + pos_sigma
+    threshold = gate_factor*sigma
+    noise_covariance = np.eye(2, dtype=float) * sigma * sigma
     mean = np.zeros(shape=[2,], dtype = float)
     num_tracks = len(state_all)
     num_obs = len(observations)
@@ -655,9 +690,9 @@ def SearchOptimalOccludedML(state_all, observations, parameters,
     a_sigma = parameters['a_sigma']
     dt = parameters['dt']
     viewer_pos = parameters['viewer_pos']
-    threshold = gate_factor*a_sigma*dt*dt
-    delta = 0.5/float(np.shape(visible_mask)[0])
-    noise_covariance = np.eye(2, dtype=float) * (pos_sigma * pos_sigma)
+    sigma = a_sigma*dt*dt/2.0 + pos_sigma
+    threshold = gate_factor*sigma
+    noise_covariance = np.eye(2, dtype=float) * sigma * sigma
     mean = np.zeros(shape=[2,], dtype = float)
     num_tracks = len(state_all)
     num_obs = len(observations)
@@ -701,6 +736,68 @@ def SearchOptimalOccludedML(state_all, observations, parameters,
     return match
 
 
+def SearchOptimalOccludedMAP(state_all, observations, parameters,
+                             visible_mask):
+    # parameters and probability distribution
+    pos_sigma = parameters['pos_sigma']
+    v_mean = parameters['v_mean']
+    a_sigma = parameters['a_sigma']
+    dt = parameters['dt']
+    viewer_pos = parameters['viewer_pos']
+    sigma = a_sigma*dt*dt/2.0 + pos_sigma
+    threshold = gate_factor*sigma
+    noise_covariance = np.eye(2, dtype=float) * pos_sigma * pos_sigma
+    mean = np.zeros(shape=[2,], dtype = float)
+    num_tracks = len(state_all)
+    num_obs = len(observations)
+    per_sigma = 8
+    delta = sigma/per_sigma
+    num_pts = 4*per_sigma+1
+    H = np.hstack([np.eye(2, dtype=float), np.zeros(shape=[2,2], dtype=float)])
+    # precompute pdf
+    InitializeNormalPDF('noise', noise_covariance)
+    # gated tracks with track-obs match score
+    gated_tracks = dict()
+    for obs_id, obs_pos in enumerate(observations):
+        gated = dict()
+        gated_tracks[obs_id] = gated
+        for tid, t_state in state_all.items():
+            t_state = state_all[tid]
+            dist = ObsTrackDist(t_state, obs_pos)
+            if dist <= threshold:
+                prob = ObsTrackProb(t_state, obs_pos, noise_covariance)
+                gated[tid] = -math.log(prob)
+    # penalty for not assigning a track
+    # 2 cases here, one is track goes out, second is track is occluded
+    unassigned_track_errors = [float('inf')] * num_tracks
+    for tid, t_state in state_all.items():
+        pred_state = t_state.GetPredictedState()
+        pred_pos = pred_state[0:2]
+        state_cov = np.matmul(H, np.matmul(t_state.GetStateCov(),
+                                           np.transpose(H)))
+        total_cov = state_cov + noise_covariance
+        prob_outside  = MatchOutsideProbMAP(pred_pos, total_cov, delta, num_pts)
+        prob_unoccluded = MatchOccludedProbMAP(pred_pos, total_cov,
+                                               visible_mask, delta, num_pts)
+        prob = max(prob_outside, prob_unoccluded)
+        if prob != 0:
+            unassigned_track_errors[tid] = -math.log(prob)
+    # penalty for creating a new track for an obervation
+    # this does not include occluded regions of previous frame,
+    # to keep things simpler
+    unassigned_obs_errors = [float('inf')] * num_obs
+    for obs_id, obs_pos in enumerate(observations):
+        prob = MatchOutsideProb(obs_pos, noise_covariance)
+        if prob != 0:
+            unassigned_obs_errors[obs_id] = -math.log(prob)
+    # search optimal
+    assigned_tracks = [False] * num_tracks
+    error, match = SearchOptimalRecursive(
+        unassigned_track_errors, unassigned_obs_errors,
+        gated_tracks, assigned_tracks, 0)
+    return match
+
+
 '''
 All readings are available, but there is no information on how many tracks
 there really are.
@@ -724,16 +821,18 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
         self.occluded         = occluded
         # delete tracks not matched 4 consecutive times for occluded case
         # if the track is not near the center, for some definition of center
-        self.not_matched_limit_boundary = 3
-        self.not_matched_limit_center = 8
+        self.not_matched_limit_boundary = 2
+        self.not_matched_limit_center = 3
         self.eps = 4 * self.parameters['pos_sigma']
 
-    def DeleteTrack(self, state):
+    def DeleteTrack(self, state, visible_mask):
         pos = state.GetPredictedState()
+        if IsOccluded(pos, visible_mask):
+            return False
         if (pos[0] > self.eps and pos[0] < 1-self.eps and
             pos[1] > self.eps and pos[1] < 1-self.eps):
-            return (state.NumTimesUnmatched() > self.not_matched_limit_center)
-        return (state.NumTimesUnmatched() > self.not_matched_limit_boundary)
+            return (state.NumTimesUnmatched() >= self.not_matched_limit_center)
+        return (state.NumTimesUnmatched() >= self.not_matched_limit_boundary)
 
 
     '''
@@ -790,7 +889,7 @@ class KalmanFilterWithAssociation(KalmanFilterGeneric):
             for tid in range(num_tracks):
                 if tid not in tracks_matched:
                     object_state = self.state[tid]
-                    if self.DeleteTrack(object_state):
+                    if self.DeleteTrack(object_state, visible_mask):
                         continue
                     object_state.SetOldTrack()
                     object_state.RecordUnmatched()
