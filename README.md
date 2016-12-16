@@ -14,7 +14,8 @@ This project tries a Bayesian inference approach to tracking objects. There are 
   - maximizing probability of an association given position estimates
   - estimating track positions given association betweeb tracks and observations
 
-For more information, and results, check out the codalab worksheet [here](https://worksheets.codalab.org/worksheets/0x676e637e50be4a8a9dfd277524ee8dc7/).
+For more information, and results, check out the codalab worksheet [here](https://worksheets.codalab.org/worksheets/
+0xee9369450dfa40f8a006a2f54da38876/).
 
 ## Dependencies
 
