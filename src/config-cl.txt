@@ -1,4 +1,4 @@
-baseline-basic baseline_basic/results
-kalman-basic basic/results
-unoccluded-nearest unoccluded_nearest/results
-unoccluded-ml unoccluded_most_likely/results
+baseline-basic ../baseline_basic/results
+kalman-basic ../basic/results
+unoccluded-nearest ../unoccluded_nearest/results
+unoccluded-ml ../unoccluded_most_likely/results
