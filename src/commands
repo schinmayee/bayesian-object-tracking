@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+python simulate.py --frames 150 --log 1
+python baseline.py --frames 100 --log 1 --output ../results/baseline_basic
+python run_predictions.py --frames 100 --log 1 --predictor basic --output ../results/basic
+python run_predictions.py --frames 100 --log 1 --predictor unoccluded_nearest --output ../results/unoccluded_nearest
+python run_predictions.py --frames 100 --log 1 --predictor unoccluded_most_likely --output ../results/unoccluded_most_likely
+python run_predictions.py --frames 100 --log 1 --predictor occluded_most_likely --output ../results/occluded_most_likely
+python plot_errors.py --output ../results/plots

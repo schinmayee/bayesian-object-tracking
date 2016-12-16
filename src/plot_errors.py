@@ -47,6 +47,7 @@ for dir_name in error_dirs:
     data = open(file_name)
     errors = pickle.load(data)
     data.close()
+    #errors = errors[0:100]
     mean.append(np.mean(errors))
     dev.append(np.std(errors))
 
@@ -61,7 +62,7 @@ rects = ax.bar(ind, mean, width, color='k', yerr=dev, align='center')
 
 # add some text for labels, title and axes ticks
 ax.set_ylabel('Mean error in position estimate')
-#ax.set_ylim([0,1.2*max(mean)])
+ax.set_ylim([0.8*min(mean),1.2*max(mean)])
 ax.set_title('Error in Position')
 ax.set_xticks(ind)
 ax.set_xticklabels(error_names)
@@ -79,6 +80,11 @@ autolabel(rects)
 plt.savefig(os.path.join(args.output_dir, 'position_error.png'))
 
 
+'''
+Relative position error does not make much sense as computed below.
+'''
+
+'''
 # read errors
 mean = list()
 dev = list()
@@ -88,6 +94,7 @@ for dir_name in error_dirs:
     data = open(file_name)
     errors = pickle.load(data)
     data.close()
+    #errors = errors[0:100]
     mean.append(np.mean(errors))
     dev.append(np.std(errors))
 
@@ -102,7 +109,7 @@ rects = ax.bar(ind, mean, width, color='k', yerr=dev, align='center')
 
 # add some text for labels, title and axes ticks
 ax.set_ylabel('Mean Relative Position Error')
-#ax.set_ylim([0,1.2*max(mean)])
+ax.set_ylim([0.8*min(mean),1.2*max(mean)])
 ax.set_title('Relative Position Error')
 ax.set_xticks(ind)
 ax.set_xticklabels(error_names)
@@ -118,3 +125,4 @@ def autolabel(rects):
 autolabel(rects)
 
 plt.savefig(os.path.join(args.output_dir, 'position_rel_error.png'))
+'''

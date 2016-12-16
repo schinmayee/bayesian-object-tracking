@@ -11,6 +11,41 @@ import utils
 est_color_new = 25
 est_color_old = 50
 
+'''
+matmul, to make work with numpy <= 1.10.
+'''
+def matmul(A, B):
+    shapeA = np.shape(A)
+    shapeB = np.shape(B)
+    nshapeA = [0,0]
+    nshapeB = [0,0]
+    if len(shapeA) == 1:
+        nshapeA[0] = 1
+        nshapeA[1] = shapeA[0]
+    else:
+        nshapeA[0]= shapeA[0]
+        nshapeA[1]= shapeA[1]
+    if len(shapeB) == 1:
+        nshapeB[0] = shapeB[0]
+        nshapeB[1] = 1
+    else:
+        nshapeB[0]= shapeB[0]
+        nshapeB[1]= shapeB[1]
+    R = np.zeros(shape=[nshapeA[0], nshapeB[1]], dtype=float)
+    assert(nshapeA[1] == nshapeB[0])
+    nA = np.reshape(A, newshape=nshapeA)
+    nB = np.reshape(B, newshape=nshapeB)
+    for i in range (nshapeA[0]):
+        for j in range (nshapeB[1]):
+            for k in range(nshapeA[1]):
+                R[i,j] += nA[i,k] * nB[k,j]
+    if len(shapeA) == 1:
+        R = np.reshape(R, newshape=[nshapeB[1],])
+    elif len(shapeB) == 1:
+        R = np.reshape(R, newshape=[nshapeA[0],])
+    return R
+
+
 
 '''
 Generic predictor class, that reads in a window of data, and predicts upto
@@ -203,20 +238,20 @@ class KalmanObjectState(object):
                 im_arr[i,j] = int(est_color)
 
     def Predict(self, F, Q):
-        xp = np.matmul(F, self.GetEstimatedState())
-        xcov = np.matmul(np.matmul(F, self.GetStateCov()), np.transpose(F)) + Q
+        xp = matmul(F, self.GetEstimatedState())
+        xcov = matmul(matmul(F, self.GetStateCov()), np.transpose(F)) + Q
         return xp, xcov
 
     def Update(self, obs, H, R):
         xp = self.GetPredictedState()
         xcov = self.GetStateCov()
-        y = obs - np.matmul(H, xp)
-        S = np.matmul(np.matmul(H, xcov), np.transpose(H)) + R
+        y = obs - matmul(H, xp)
+        S = matmul(matmul(H, xcov), np.transpose(H)) + R
         Sinv = np.linalg.inv(S)
-        K = np.matmul(np.matmul(xcov, np.transpose(H)), Sinv)
-        xe = xp + np.matmul(K, y)
-        KH = np.matmul(K, H)
-        xcov = np.matmul(np.eye(np.shape(KH)[0]) - KH, self.GetStateCov())
+        K = matmul(matmul(xcov, np.transpose(H)), Sinv)
+        xe = xp + matmul(K, y)
+        KH = matmul(K, H)
+        xcov = matmul(np.eye(np.shape(KH)[0]) - KH, self.GetStateCov())
         return xe, xcov
 
 
@@ -248,7 +283,7 @@ class KalmanFilterGeneric(Predictor):
         self.H = np.hstack([eye2, zeros2])
         # initialize Q (evolution uncertainty) and R (observation uncertainty)
         G = np.vstack([eye2*dt*dt/2, eye2*dt])
-        self.Q = a_sigma*a_sigma*np.matmul(G, np.transpose(G))
+        self.Q = a_sigma*a_sigma*matmul(G, np.transpose(G))
         self.R = pos_sigma*pos_sigma*eye2
 
     '''
@@ -378,12 +413,18 @@ class KalmanFilterBasic(KalmanFilterGeneric):
                 np.reshape(np.array(obj_state[1], dtype=float), [2,]))
 
 
+'''
+Distance between observation and predicted state.
+'''
 def ObsTrackDist(state, obs_pos):
     pred_state = state.GetPredictedState()
     pred_pos = np.array(pred_state[0:2], dtype=float)
     return np.sqrt(np.sum(np.power(obs_pos - pred_pos, 2)))
 
 
+'''
+Distance between predicted state and closest boundary.
+'''
 def DistFromClosestBoundary(state):
     pred_state = state.GetPredictedState()
     pos = pred_state[0:2]
@@ -391,13 +432,19 @@ def DistFromClosestBoundary(state):
     ymin = min(pos[1], 1-pos[1])
     return (max(min(xmin, ymin), 0))
 
+'''
+Multivariate normal.
+'''
 def NormalPDF(mean, covariance, x):
-    cov_inv_x = np.matmul(np.linalg.inv(covariance), (x-mean))
-    t = -0.5 * np.matmul(np.transpose(x-mean), cov_inv_x)
+    cov_inv_x = matmul(np.linalg.inv(covariance), (x-mean))
+    t = -0.5 * matmul(np.transpose(x-mean), cov_inv_x)
     d = np.linalg.det(2*math.pi*covariance)
     return math.exp(t)/math.sqrt(d)
 
 
+'''
+Discretize and precompute normal pdf.
+'''
 nside = 200
 ndim  = 2*nside + 1
 pdf_scale = 8.0/float(2*nside)
@@ -410,14 +457,13 @@ def InitializeNormalPDF(name, covariance):
     computed_pdfs[name] = pdf
     cov_det_rt = np.sqrt(np.linalg.det(covariance))
     A = covariance / cov_det_rt
-    delta = (pdf_scale * np.matmul(A, np.ones(shape=[2,], dtype=float)))
+    delta = (pdf_scale * matmul(A, np.ones(shape=[2,], dtype=float)))
     zv2 = np.zeros(shape=[2,], dtype=float)
     for i in range(ndim):
         for j in range(ndim):
             il, jl = i - nside, j - nside
             x = np.reshape(np.array([il*delta[0], jl*delta[1]]), [2,])
             computed_pdfs[name][i,j] = NormalPDF(zv2, covariance, x)
-
 def PDF(name, x, y):
     i, j = int(round(x)), int(round(y))
     if i < 0 or i > ndim:
@@ -426,19 +472,25 @@ def PDF(name, x, y):
         return 0
     return computed_pdfs[name][i,j]
 
+'''
+Probability that an observation is from a track, without occlusion.
+'''
 def ObsTrackProb(state, obs_pos, covariance):
     pred_state = state.GetPredictedState()
     pred_pos = pred_state[0:2]
     pdf = NormalPDF(pred_pos, covariance, obs_pos)
     cov_det_rt = np.sqrt(np.linalg.det(covariance))
     A = covariance / cov_det_rt
-    delta = (pdf_scale * np.matmul(A, np.ones(shape=[2,], dtype=float)))
+    delta = (pdf_scale * matmul(A, np.ones(shape=[2,], dtype=float)))
     return pdf * delta[0] * delta[1]
 
+'''
+Probability that a track is new or left.
+'''
 def MatchOutsideProb(pos, covariance):
     cov_det_rt = np.sqrt(np.linalg.det(covariance))
     A = covariance / cov_det_rt
-    delta = (pdf_scale * np.matmul(A, np.ones(shape=[2,], dtype=float)))
+    delta = (pdf_scale * matmul(A, np.ones(shape=[2,], dtype=float)))
     prob = 0
     for i in range(ndim):
         for j in range(ndim):
@@ -451,6 +503,9 @@ def MatchOutsideProb(pos, covariance):
                 continue
     return prob * delta[0] * delta[1]
 
+'''
+Returns true if a point seems occluded to a viewer.
+'''
 def IsOccluded(pos, visible_mask):
     if (pos[0] < 0 or pos[0] > 1 or pos[1] < 0 or pos[1] > 1):
         return False
@@ -460,10 +515,13 @@ def IsOccluded(pos, visible_mask):
         return False
     return (visible_mask[int(coord[0]), int(coord[1])] == 0)
 
+'''
+Probability that a track is occluded.
+'''
 def MatchOccludedProb(pos, covariance, visible_mask):
     cov_det_rt = np.sqrt(np.linalg.det(covariance))
     A = covariance / cov_det_rt
-    delta = (pdf_scale * np.matmul(A, np.ones(shape=[2,], dtype=float)))
+    delta = (pdf_scale * matmul(A, np.ones(shape=[2,], dtype=float)))
     prob = 0
     for i in range(ndim):
         for j in range(ndim):
@@ -476,11 +534,18 @@ def MatchOccludedProb(pos, covariance, visible_mask):
                 continue
     return prob * delta[0] * delta[1]
 
+'''
+Probability that an observation matches a track, using prior distribution on
+the track.
+'''
 def ObsTrackProbMAP(state, obs_pos, covariance):
     pred_state = state.GetPredictedState()
     pred_pos = pred_state[0:2]
     return NormalPDF(pred_pos, covariance, obs_pos)
 
+'''
+Probability that a track is new or left, using prior distribution on the track.
+'''
 def MatchOutsideProbMAP(pos, covariance, delta, num_pts):
     prob = 0
     side_pts = int((num_pts-1)/2)
@@ -495,6 +560,9 @@ def MatchOutsideProbMAP(pos, covariance, delta, num_pts):
                 continue
     return prob
 
+'''
+Probability that a track is occluded, using prior distribution on the track.
+'''
 def MatchOccludedProbMAP(pos, covariance, visible_mask, delta, num_pts):
     prob = 0
     side_pts = int((num_pts-1)/2)
@@ -513,8 +581,9 @@ def MatchOccludedProbMAP(pos, covariance, visible_mask, delta, num_pts):
 '''
 Brute-force search optimal match given observations, tracks, and match/no-match
 errors.
-All observations must match to a track or create a new track. If a track is
-unmatched, then there is a penalty given by no-match error unassigned_errors.
+All observations must match to a track or create a new track.
+Penalty for unmatched tracks and observations are given by
+unassigned_track_errirs abd unassigend_obs_errors.
 '''
 def SearchOptimalRecursive(unassigned_track_errors, unassigned_obs_errors,
                            gated_tracks, assigned_tracks, obs_id):
@@ -586,7 +655,6 @@ Does a brute-force search with gating to restrict observation-track match pairs
 to a bounded region around each observation/track.
 All observations must match to a track or create a new track. If a track is
 unmatched, then there is a penalty, computed using NoObsTrackError.
-Tracks that are outside the frame domain are not penalized.
 '''
 def SearchOptimalNearest(state_all, observations, parameters, visible_mask):
     pos_sigma = parameters['pos_sigma']
@@ -631,7 +699,6 @@ Does a brute-force search with gating to restrict observation-track match pairs
 to a bounded region around each observation/track.
 All observations must match to a track or create a new track. If a track is
 unmatched, then there is a penalty, computed using NoObsTrackError.
-Tracks that are outside the frame domain are not penalized.
 '''
 def SearchOptimalUnoccludedML(state_all, observations, parameters,
                               visible_mask):
@@ -682,6 +749,12 @@ def SearchOptimalUnoccludedML(state_all, observations, parameters,
     return match
 
 
+'''
+Get optimal match given observations and predicted tracks for one frame.
+Does a brute-force search with gating to restrict observation-track match pairs
+to a bounded region around each observation/track.
+Penalizes unmatched observations and unmatched tracks.
+'''
 def SearchOptimalOccludedML(state_all, observations, parameters,
                             visible_mask):
     # parameters and probability distribution
@@ -736,6 +809,13 @@ def SearchOptimalOccludedML(state_all, observations, parameters,
     return match
 
 
+'''
+Get optimal match given observations and predicted tracks for one frame.
+Does a brute-force search with gating to restrict observation-track match pairs
+to a bounded region around each observation/track.
+Penalizes unmatched observations and unmatched tracks, and uses prior
+distribution on track estimates.
+'''
 def SearchOptimalOccludedMAP(state_all, observations, parameters,
                              visible_mask):
     # parameters and probability distribution
@@ -773,7 +853,7 @@ def SearchOptimalOccludedMAP(state_all, observations, parameters,
     for tid, t_state in state_all.items():
         pred_state = t_state.GetPredictedState()
         pred_pos = pred_state[0:2]
-        state_cov = np.matmul(H, np.matmul(t_state.GetStateCov(),
+        state_cov = matmul(H, matmul(t_state.GetStateCov(),
                                            np.transpose(H)))
         total_cov = state_cov + noise_covariance
         prob_outside  = MatchOutsideProbMAP(pred_pos, total_cov, delta, num_pts)

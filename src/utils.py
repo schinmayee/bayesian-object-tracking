@@ -12,6 +12,7 @@ def SaveImage(array, file_name):
 # read image and return an array
 def ReadImage(file_name):
     im = Image.open(file_name)
+    width, height = im.size
     return np.array(list(im.getdata()), np.uint8).\
-           reshape(im.height, im.width)
+           reshape(height, width)
 

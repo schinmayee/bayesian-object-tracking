@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+cl upload src -d "code"
+
+cl run :src 'python src/simulate.py --frames 40 --log 1 --output data' -n generate-data --request-docker-image tensorflow/tensorflow:0.9.0 -d "generate data"
+
+cl run :src data:generate-data/data 'python src/baseline.py --frames 40 --log 1 --data data --output results' -n baseline_basic --request-docker-image tensorflow/tensorflow:0.9.0 -d "baseline given association"
+
+cl run :src data:generate-data/data 'python src/run_predictions.py --frames 40 --log 1 --data data --output results --predictor basic' -n basic --request-docker-image tensorflow/tensorflow:0.9.0 -d "kalman"
+cl run :src data:generate-data/data 'python src/run_predictions.py --frames 40 --log 1 --data data --output results --predictor unoccluded_nearest' -n unoccluded_nearest --request-docker-image tensorflow/tensorflow:0.9.0 -d "unoccluded nearest"
+cl run :src data:generate-data/data 'python src/run_predictions.py --frames 40 --log 1 --data data --output results --predictor unoccluded_most_likely' -n unoccluded_most_likely --request-docker-image tensorflow/tensorflow:0.9.0 -d "unoccluded most likely"
+cl run :src data:generate-data/data 'python src/run_predictions.py --frames 40 --log 1 --data data --output results --predictor occluded_most_likely' -n occluded_most_likely --request-docker-image tensorflow/tensorflow:0.9.0 -d "occluded most likely"
+
+cl run :src :baseline_basic :basic :unoccluded_nearest :unoccluded_most_likely 'python src/plot_errors.py --config src/config-cl.txt --output .' -n plot --request-docker-image tensorflow/tensorflow:0.9.0 -d "plots"

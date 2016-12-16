@@ -241,8 +241,6 @@ class Simulator(object):
     The first line, the header, gives the number of objects, and each
     following line corresponds to one object.
     '''
-    # TODO: change this to a csv format to make it more manageable as more
-    # columns are added
     def SaveState(self, f):
         file_name = os.path.join(self.output_dir, 'state_%08d.txt'%f)
         with open(file_name, 'w') as data:
